@@ -1,0 +1,11 @@
+Dataset link: https://www.kaggle.com/datasets/iamsouravbanerjee/animal-image-dataset-90-different-animals
+
+Folder structure in data folder:
+
+data
+   |---animals
+	    |---antelope
+	    |---badger
+	    |---....
+	    |---zebra
+   |---name of animals.txt
