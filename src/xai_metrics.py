@@ -116,7 +116,7 @@ class XAIEvaluator:
         return probs
     
     # --------- LIME ----------
-    def evaluate_with_lime(self, samples):
+    def evaluate_with_lime(self, samples, num_samples=1000):
         explainer = lime_image.LimeImageExplainer()
         results = {}
 
@@ -136,7 +136,7 @@ class XAIEvaluator:
                 classifier_fn=lambda ims: self.predict_proba_fn(ims),
                 top_labels=len(self.class_names),
                 hide_color=0,
-                num_samples=1000,
+                num_samples=num_samples,
             )
 
             top_label = np.argmax(self.predict_proba_fn(np.array([img_np]))[0])

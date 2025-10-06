@@ -189,3 +189,14 @@ F1 Score: 0.9877
 Specificity: 0.9962
 AUC Score: 0.9993
 
+VGG19
+Accuracy: 0.9863
+Precision: 0.9854
+Recall: 0.9851
+F1 Score: 0.9852
+Specificity: 0.9955
+AUC Score: 0.9990
+
+
+📊 LIME metrics: {'LIME_Fidelity': 0.25, 'LIME_Comprehensibility': 18809.225, 'LIME_Consistency': 0.08275641025599646, 'LIME_LocalAcc': 0.25, 'LIME_Stability': -60.48586513205729, 'LIME_Similarity': 0.08275641025599646, 'LIME_Robustness': 44.721359549995796, 'LIME_Time': 233.81126928329468, 'FCC': 389.14598517433626}
+

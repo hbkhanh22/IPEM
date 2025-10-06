@@ -284,7 +284,7 @@ class AnimalImageClassifier:
             preds = torch.softmax(self.model(batch), dim=1).cpu().numpy()
         return preds
     
-    def run_lime_metrics(self, num_samples=8):
+    def run_lime_metrics(self, num_samples=1000):
         """Tính metrics cho LIME"""
         evaluator = XAIEvaluator(self.model, self.class_names)
 
@@ -295,7 +295,7 @@ class AnimalImageClassifier:
             for img, label in zip(imgs, labels)
         ]
 
-        results = evaluator.evaluate_with_lime(samples)
+        results = evaluator.evaluate_with_lime(samples=samples, num_samples=num_samples)
         print("📊 LIME metrics:", results)
         return results
 

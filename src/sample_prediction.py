@@ -540,7 +540,7 @@ def main(args_dataset, args_model_name):
             # LIME
             lime_explanation, lime_mask = explain_with_lime(clf, img_np, clf.class_names, sample_output_dir, args_dataset, org_img)
             # SHAP
-            #shap_values, shap_heatmap = explain_with_shap(clf, img_tensor, clf.class_names, sample_output_dir, args_dataset, org_img)
+            shap_values, shap_heatmap = explain_with_shap(clf, img_tensor, clf.class_names, sample_output_dir, args_dataset, org_img)
 
             # PEBEX
             pebex_heatmap = explain_with_pebex(clf, img_tensor, clf.class_names, sample_output_dir, args_dataset, org_img)
@@ -562,7 +562,7 @@ def main(args_dataset, args_model_name):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dataset', type=str, choices=['animals', 'sars-cov2', 'caltech-101'], default='animals')
+    parser.add_argument('--dataset', type=str, choices=['animals', 'sars-cov2', 'caltech-101', 'brain-tumor'], default='animals')
     parser.add_argument('--model', type=str, choices=["efficientnet_b3", "resnet50", "densenet121", "mobilenet_v3", "vgg19"], default="efficientnet_b3")
 
     dataset = parser.parse_args().dataset
