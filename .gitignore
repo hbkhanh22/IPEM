@@ -1,0 +1,56 @@
+# =============================
+# Ignore Datasets (Images)
+# =============================
+data/
+!data/load_data.ipynb
+!data/README.md
+
+# =============================
+# Python cache & temp files
+# =============================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pkl
+*.joblib
+
+# =============================
+# Model files (nặng)
+# =============================
+*.h5
+*.pt
+*.pth
+*.onnx
+*.ckpt
+
+# =============================
+# Compressed / archive files
+# =============================
+*.zip
+*.tar
+*.tar.gz
+*.rar
+
+# =============================
+# Logs & outputs
+# =============================
+logs/
+outputs/
+*.log
+runs/
+
+# =============================
+# Virtual environments
+# =============================
+.venv/
+venv/
+env/
+
+# =============================
+# System & Editor files
+# =============================
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

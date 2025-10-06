@@ -1,0 +1,191 @@
+📊 LIME metrics: {'LIME_Fidelity': 0.006172839506172839, 'LIME_Comprehensibility': 14350.961728395061, 'LIME_Consistency': 0.08173918417758884, 'LIME_LocalAcc': 0.006172839506172839, 'LIME_Stability': -60.50977125107078, 'LIME_Similarity': 0.08173918417758884, 'LIME_Robustness': 44.72135954999579, 'LIME_Time': 5114.972204446793, 'FCC': 7.240962369400077}
+
+
+📊 SHAP metrics: {'SHAP_Fidelity': 0.96875, 'SHAP_Comprehensibility': 50176.0, 'SHAP_Consistency': 0.0895315550134833, 'SHAP_LocalAcc': 0.96875, 'SHAP_Stability': 3.4181442919895257, 'SHAP_Similarity': 0.08126224285121743, 'SHAP_Robustness': 7.05961214817066, 'SHAP_Time': 7800.496821880341, 'FCC': 4351.949826095396}
+
+
+ PEBEX metrics: {'PEBEX_Fidelity': 0.9234567901234568, 'PEBEX_Comprehensibility': 50095.41728395062, 'PEBEX_Consistency': 0.0922393100650582, 'PEBEX_LocalAcc': 0.9234567901234568, 'PEBEX_Stability': -7.246606691826918, 'PEBEX_Similarity': 0.0922393100650582, 'PEBEX_Robustness': 4.046847880975271, 'PEBEX_Time': 149.21711707115173, 'FCC': 4267.078410264459}
+
+----------------
+# Animals:
+
+Resnet50
+Accuracy: 0.9049
+Precision: 0.9061
+Recall: 0.9128
+F1 Score: 0.9028
+Specificity: 0.9989
+AUC Score: 0.9991
+
+Densenet121
+Accuracy: 0.9037
+Precision: 0.8995
+Recall: 0.8999
+F1 Score: 0.8924
+Specificity: 0.9989
+AUC Score: 0.9990
+
+Efficientnet B3
+Accuracy: 0.9358
+Precision: 0.9376
+Recall: 0.9350
+F1 Score: 0.9308
+Specificity: 0.9993
+AUC Score: 0.9995
+
+Mobilenet-V3
+Accuracy: 0.8914
+Precision: 0.8910
+Recall: 0.8859
+F1 Score: 0.8818
+Specificity: 0.9988
+AUC Score: 0.9974
+
+VGG19
+Accuracy: 0.7543
+Precision: 0.7925
+Recall: 0.7549
+F1 Score: 0.7464
+Specificity: 0.9972
+AUC Score: 0.9932
+
+----------------
+# SARS-COV2
+
+VGG19
+Accuracy: 0.9597
+Precision: 0.9593
+Recall: 0.9603
+F1 Score: 0.9596
+Specificity: 0.9603
+AUC Score: 0.9946
+
+Efficientnet-B3
+Accuracy: 0.9892
+Precision: 0.9889
+Recall: 0.9898
+F1 Score: 0.9892
+Specificity: 0.9898
+AUC Score: 0.9996
+
+Resnet50
+Accuracy: 0.9866
+Precision: 0.9871
+Recall: 0.9861
+F1 Score: 0.9865
+Specificity: 0.9861
+AUC Score: 0.9998
+
+Densenet121
+Accuracy: 0.9731
+Precision: 0.9750
+Recall: 0.9719
+F1 Score: 0.9730
+Specificity: 0.9719
+AUC Score: 0.9992
+
+Mobilenet-V3
+Accuracy: 0.9892
+Precision: 0.9896
+Recall: 0.9889
+F1 Score: 0.9892
+Specificity: 0.9889
+AUC Score: 0.9997
+
+
+
+📊 LIME metrics: {'LIME_Fidelity': 0.006172839506172839, 'LIME_Comprehensibility': 14350.961728395061, 'LIME_Consistency': 0.08173918417758884, 'LIME_LocalAcc': 0.006172839506172839, 'LIME_Stability': -60.50977125107078, 'LIME_Similarity': 0.08173918417758884, 'LIME_Robustness': 44.72135954999579, 'LIME_Time': 5114.972204446793, 'FCC': 7.240962369400077}
+
+
+📊 SHAP metrics: {'SHAP_Fidelity': 0.96875, 'SHAP_Comprehensibility': 50176.0, 'SHAP_Consistency': 0.0895315550134833, 'SHAP_LocalAcc': 0.96875, 'SHAP_Stability': 3.4181442919895257, 'SHAP_Similarity': 0.08126224285121743, 'SHAP_Robustness': 7.05961214817066, 'SHAP_Time': 7800.496821880341, 'FCC': 4351.949826095396}
+
+
+ PEBEX metrics: {'PEBEX_Fidelity': 0.9234567901234568, 'PEBEX_Comprehensibility': 50095.41728395062, 'PEBEX_Consistency': 0.0922393100650582, 'PEBEX_LocalAcc': 0.9234567901234568, 'PEBEX_Stability': -7.246606691826918, 'PEBEX_Similarity': 0.0922393100650582, 'PEBEX_Robustness': 4.046847880975271, 'PEBEX_Time': 149.21711707115173, 'FCC': 4267.078410264459}
+
+
+-----------------------
+Caltech-101
+Efficientnet-B3
+Accuracy: 0.9613
+Precision: 0.9539
+Recall: 0.9512
+F1 Score: 0.9459
+Specificity: 0.9996
+AUC Score: 0.9996
+
+Resnet50
+Accuracy: 0.9533
+Precision: 0.9351
+Recall: 0.9395
+F1 Score: 0.9315
+Specificity: 0.9995
+AUC Score: 0.9995
+
+Densenet121
+Accuracy: 0.9511
+Precision: 0.9251
+Recall: 0.9279
+F1 Score: 0.9213
+Specificity: 0.9995
+AUC Score: 0.9994
+
+Mobilenet-V3
+Accuracy: 0.9460
+Precision: 0.9238
+Recall: 0.9247
+F1 Score: 0.9135
+Specificity: 0.9995
+AUC Score: 0.9984
+
+VGG19
+Accuracy: 0.9088
+Precision: 0.8774
+Recall: 0.8784
+F1 Score: 0.8665
+Specificity: 0.9991
+AUC Score: 0.9969
+
+
+
+📊 LIME metrics: {'LIME_Fidelity': 0.09555069292487235, 'LIME_Comprehensibility': 15694.15025528811, 'LIME_Consistency': 0.08048467153244429, 'LIME_LocalAcc': 0.09555069292487235, 'LIME_Stability': -60.54108544094688, 'LIME_Similarity': 0.08048467153244429, 'LIME_Robustness': 44.72135954999579, 'LIME_Time': 8531.258248090744, 'FCC': 120.69376163703677}
+
+📊 SHAP metrics: {'SHAP_Fidelity': 1.0, 'SHAP_Comprehensibility': 50176.0, 'SHAP_Consistency': 0.09280775016633717, 'SHAP_LocalAcc': 1.0, 'SHAP_Stability': 7.790574022234736, 'SHAP_Similarity': 0.08301845472550072, 'SHAP_Robustness': 11.038908109068862, 'SHAP_Time': 8674.842103004456, 'FCC': 4656.721672346134}
+
+📊 PEBEX metrics: {'PEBEX_Fidelity': 0.9642596644784829, 'PEBEX_Comprehensibility': 49980.18307804522, 'PEBEX_Consistency': 0.08742254582967718, 'PEBEX_LocalAcc': 0.9642596644784829, 'PEBEX_Stability': -3.7813306712948997, 'PEBEX_Similarity': 0.08742254582967718, 'PEBEX_Robustness': 2.0638258891381476, 'PEBEX_Time': 196.21325206756592, 'FCC': 4213.231207904184}
+
+
+-------------------------
+Brain tumor
+
+Resnet50
+Accuracy: 0.9870
+Precision: 0.9864
+Recall: 0.9860
+F1 Score: 0.9861
+Specificity: 0.9957
+AUC Score: 0.9999
+
+Efficientnet B3
+Accuracy: 0.9901
+Precision: 0.9899
+Recall: 0.9902
+F1 Score: 0.9900
+Specificity: 0.9967
+AUC Score: 0.9981
+
+Densenet121
+Accuracy: 0.9939
+Precision: 0.9938
+Recall: 0.9934
+F1 Score: 0.9936
+Specificity: 0.9980
+AUC Score: 0.9998
+
+MobilenetV3
+Accuracy: 0.9886
+Precision: 0.9882
+Recall: 0.9875
+F1 Score: 0.9877
+Specificity: 0.9962
+AUC Score: 0.9993
+

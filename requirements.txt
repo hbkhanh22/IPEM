@@ -1,0 +1,94 @@
+# Requirements for Animal Image Classification with MFPP-PeBEx XAI
+# Cài đặt: pip install -r requirements.txt
+
+# =============================================================================
+# CORE MACHINE LEARNING LIBRARIES
+# =============================================================================
+torch>=1.12.0
+torchvision>=0.13.0
+torchaudio>=0.12.0  # For audio processing if needed
+numpy>=1.21.0
+scipy>=1.7.0
+scikit-learn>=1.1.0
+
+# =============================================================================
+# IMAGE PROCESSING & COMPUTER VISION
+# =============================================================================
+opencv-python>=4.6.0
+Pillow>=9.0.0
+scikit-image>=0.19.0
+imageio>=2.19.0
+
+# =============================================================================
+# EXPLAINABLE AI (XAI) LIBRARIES
+# =============================================================================
+lime>=0.2.0.1
+shap>=0.41.0
+captum>=0.6.0  # Facebook's XAI library (optional)
+
+# =============================================================================
+# DATA PROCESSING & UTILITIES
+# =============================================================================
+pandas>=1.4.0
+tqdm>=4.64.0
+pathlib2>=2.3.7; python_version < "3.4"
+typing-extensions>=4.0.0; python_version < "3.8"
+
+# =============================================================================
+# VISUALIZATION
+# =============================================================================
+matplotlib>=3.5.0
+seaborn>=0.11.0
+plotly>=5.10.0  # For interactive plots (optional)
+
+# =============================================================================
+# DEEP LEARNING UTILITIES
+# =============================================================================
+tensorboard>=2.9.0  # For training visualization
+wandb>=0.13.0  # For experiment tracking (optional)
+albumentations>=1.2.0  # For advanced data augmentation (optional)
+
+# =============================================================================
+# SYSTEM & PERFORMANCE
+# =============================================================================
+psutil>=5.9.0  # For system monitoring
+memory-profiler>=0.60.0  # For memory profiling (optional)
+line-profiler>=4.0.0  # For line-by-line profiling (optional)
+
+# =============================================================================
+# DEVELOPMENT & TESTING
+# =============================================================================
+pytest>=7.0.0
+pytest-cov>=3.0.0
+black>=22.0.0  # Code formatting
+flake8>=4.0.0  # Linting
+isort>=5.10.0  # Import sorting
+
+# =============================================================================
+# JUPYTER & NOTEBOOKS (Optional)
+# =============================================================================
+jupyter>=1.0.0
+ipywidgets>=7.7.0
+notebook>=6.4.0
+
+# =============================================================================
+# GPU ACCELERATION (Optional - Uncomment if using CUDA)
+# =============================================================================
+# torch-audio>=0.12.0  # Uncomment if using audio
+# accelerate>=0.20.0  # For distributed training
+# deepspeed>=0.7.0  # For large model training
+
+# =============================================================================
+# ADDITIONAL XAI LIBRARIES (Optional)
+# =============================================================================
+# grad-cam>=1.4.0  # For Grad-CAM explanations
+# integrated-gradients>=1.0.0  # For Integrated Gradients
+# smooth-grad>=1.0.0  # For SmoothGrad explanations
+
+# =============================================================================
+# VERSION CONSTRAINTS
+# =============================================================================
+# Python >= 3.8 required
+# CUDA >= 11.6 recommended for GPU acceleration
+# Memory >= 8GB RAM recommended
+# Storage >= 5GB free space for models and data
