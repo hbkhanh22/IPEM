@@ -36,7 +36,6 @@ __pycache__/
 # Logs & outputs
 # =============================
 logs/
-outputs/
 *.log
 runs/
 
