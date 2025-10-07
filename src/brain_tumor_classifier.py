@@ -296,35 +296,15 @@ class BrainTumorClassifier:
             preds = torch.softmax(self.model(batch), dim=1).cpu().numpy()
         return preds
     
-    def run_lime_metrics(self, num_samples_per_class=10):
+    def run_lime_metrics(self):
         """Tính metrics cho LIME"""
         evaluator = XAIEvaluator(self.model, self.class_names)
-        dataset = self.test_loader.dataset
-
-        selected_indices = []
-        class_count = defaultdict(int)
-
-        for i, (_, label) in enumerate(dataset.samples):
-            if class_count[label] < num_samples_per_class:
-                selected_indices.append(i)
-                class_count[label] += 1
-            if len(class_count) == len(dataset.classes) and all(
-                c >= num_samples_per_class for c in class_count.values()
-            ):
-                break
-        subset_loader = DataLoader(
-            Subset(dataset, selected_indices),
-            batch_size=self.batch_size,
-            shuffle=False
-        )
-        
-        samples = [(img, label.item()) for imgs, labels in subset_loader for img, label in zip(imgs, labels)]
-        # # lấy samples giống run_lime
-        # samples = [
-        #     (img, label.item())
-        #     for imgs, labels in self.test_loader
-        #     for img, label in zip(imgs, labels)
-        # ]
+        # lấy samples giống run_lime
+        samples = [
+            (img, label.item())
+            for imgs, labels in self.test_loader
+            for img, label in zip(imgs, labels)
+        ]
 
         results = evaluator.evaluate_with_lime(samples)
         print("📊 LIME metrics:", results)

@@ -31,9 +31,9 @@ def main():
                           img_size=args.img_size, batch_size=args.batch_size, epochs=args.epochs)
     # clf.train()
     clf.test()
-    lime_results = clf.run_lime_metrics()
+    #lime_results = clf.run_lime_metrics()
     #shap_results = clf.run_shap_metrics()
-    #pebex_results = clf.run_pebex_metrics()
+    pebex_results = clf.run_pebex_metrics()
 
 if __name__ == "__main__":
     main()  
