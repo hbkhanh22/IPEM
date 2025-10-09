@@ -56,33 +56,6 @@ class XAIEvaluator:
         return {
             "FCC": fid * comp * cons
         }
-    def compute_fidelity_shap(self, sample_imgs, shap_values, expected_value):
-        """
-        Fidelity cho SHAP (dựa trên accuracy của predicted labels).
-        """
-        self.model.eval()
-        device = next(self.model.parameters()).device
-
-        with torch.no_grad():
-            y_model = self.model(sample_imgs.to(device))  # (N, num_classes)
-            y_model = torch.softmax(y_model, dim=1).cpu().numpy()
-        y_pred = np.argmax(y_model, axis=1)  # nhãn mô hình gốc
-
-        # tái tạo dự đoán từ shap
-        N = sample_imgs.shape[0]
-        y_local = np.zeros_like(y_model)
-
-        for c in range(len(shap_values)):  # lặp qua class
-            contrib = shap_values[c].reshape(N, -1).sum(axis=1)  # (N,)
-            y_local[:, c] = expected_value[c] + contrib
-
-        # softmax để chuyển thành phân phối
-        y_local = np.exp(y_local) / np.exp(y_local).sum(axis=1, keepdims=True)
-        y_pred_e = np.argmax(y_local, axis=1)  # nhãn từ surrogate
-
-        # Fidelity = accuracy giữa nhãn mô hình gốc và surrogate
-        fidelity = accuracy_score(y_pred, y_pred_e)
-        return fidelity
     
     # --------- Vector hóa heatmap để tính sim ----------
     def vectorize_explanation(self, heatmap, k=2000):
@@ -191,12 +164,7 @@ class XAIEvaluator:
         imgs = imgs.to(device)
 
         N = imgs.shape[0]
-        # # Random 50% chỉ số
-        # indices = torch.randperm(N)[: N // 16]
 
-        # # Chọn 50% ảnh
-        # imgs = imgs[indices]
-        # N = N // 16
         # 2) Chọn background cho SHAP (dùng 2 ảnh đầu trong batch nếu có)
         bg = imgs[:2].to(device)
         print(next(self.model.parameters()).device)   # xem model đang ở đâu
@@ -215,7 +183,6 @@ class XAIEvaluator:
             # - list of (N,C,H,W) length = num_classes
             # - numpy array 5D (N,C,H,W,num_classes)
             # - numpy array 4D (N,C,H,W)
-            import numpy as _np
             if isinstance(sv, list):
                 # mỗi phần tử (N,C,H,W)
                 arrs = []
@@ -223,16 +190,16 @@ class XAIEvaluator:
                     if isinstance(part, torch.Tensor):
                         part = part.detach().cpu().numpy()
                     arrs.append(part)
-                stacked = _np.stack(arrs, axis=0)  # (num_classes, N, C, H, W)
+                stacked = np.stack(arrs, axis=0)  # (num_classes, N, C, H, W)
                 return stacked
             else:
                 # tensor/ndarray
                 if isinstance(sv, torch.Tensor):
                     sv = sv.detach().cpu().numpy()
-                sv = _np.asarray(sv)
+                sv = np.asarray(sv)
                 if sv.ndim == 5:
                     # (N, C, H, W, num_classes) -> transpose to (num_classes, N, C, H, W)
-                    return _np.transpose(sv, (4, 0, 1, 2, 3))
+                    return np.transpose(sv, (4, 0, 1, 2, 3))
                 elif sv.ndim == 4:
                     # (N,C,H,W) -> single class
                     return sv[np.newaxis, ...]  # (1, N, C, H, W)

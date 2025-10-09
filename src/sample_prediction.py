@@ -11,16 +11,8 @@ from pathlib import Path
 from torchvision import transforms
 from PIL import Image
 from skimage.transform import resize
-import argparse
-import cv2
 
-import sys
-sys.path.append('src')
-from covid_classifier import COVIDClassifier
-from animal_classifier import AnimalImageClassifier
 from pebex_explainer import PEBEXExplainer
-from caltech_classifier import CaltechImageClassifier
-from brain_tumor_classifier import BrainTumorClassifier
 from lime import lime_image
 from skimage.segmentation import mark_boundaries, slic
 import shap
@@ -245,7 +237,6 @@ def explain_with_lime(clf, img_np, class_names, output_dir, args_dataset, org_im
     
     # Lấy mask cho class được dự đoán
     pred_class = np.argmax(predict_proba_fn(np.array([img_np])))
-    #pred_class = predict_with_model(clf.model, img_np)[0]
     temp, mask = explanation.get_image_and_mask(
         label=pred_class, 
         positive_only=True, 
@@ -268,7 +259,6 @@ def explain_with_lime(clf, img_np, class_names, output_dir, args_dataset, org_im
         pred_class=pred_class,
         save_path=save_path
     )
-    
     return explanation, mask
 
 def explain_with_shap(clf, img_tensor, class_names, output_dir, args_dataset, org_img, top_k=3):
@@ -291,10 +281,6 @@ def explain_with_shap(clf, img_tensor, class_names, output_dir, args_dataset, or
     #shap_array.resize((org_img.shape))
     # Lấy class được dự đoán
     pred_class, _, _ = predict_with_model(clf.model, img_tensor)
-    
-    #print(shap_array.shape)
-    
-    #img_np = img_tensor.squeeze(0).permute(1, 2, 0).cpu().numpy()
     org_img_np = np.array(org_img)
     # Tạo heatmap cho class được dự đoán dưới dạng ma trận (H, W)
     if shap_array.ndim == 5 and shap_array.shape[0] > 1 and shap_array.shape[1] == 1:
@@ -336,24 +322,15 @@ def explain_with_shap(clf, img_tensor, class_names, output_dir, args_dataset, or
     
     # Tạo superpixel với kích thước vừa phải bằng SLIC
     img_float = (org_img_np.astype(np.float32) / 255.0)
-    segments = slic(img_float, n_segments=50, compactness=10, sigma=1, start_label=0)
+    segments = slic(img_float, n_segments=10, compactness=10, sigma=1, start_label=0)
 
-    # Tính giá trị trung bình SHAP cho mỗi superpixel
-    sp_importance = {}
+    # Tạo heatmap highlight
+    highlight_map = np.zeros_like(heatmap_resized, dtype=np.float32)
+
     for seg_id in np.unique(segments):
         mask_sp = (segments == seg_id)
         if np.any(mask_sp):
-            sp_importance[seg_id] = float(np.mean(heatmap_resized[mask_sp]))
-
-    # Chọn top-k superpixel quan trọng nhất
-    top_segments = sorted(sp_importance.items(), key=lambda x: -abs(x[1]))[:top_k]
-    top_ids = set([seg_id for seg_id, _ in top_segments])
-
-    # Tạo heatmap highlight chỉ cho top-k
-    highlight_map = np.zeros_like(heatmap_resized, dtype=np.float32)
-    for seg_id in top_ids:
-        mask_sp = (segments == seg_id)
-        highlight_map[mask_sp] = heatmap_resized[mask_sp]
+            highlight_map[mask_sp] = heatmap_resized[mask_sp]
 
     # Lưu kết quả
     output_path = Path(output_dir) / "shap"
@@ -370,17 +347,13 @@ def explain_with_shap(clf, img_tensor, class_names, output_dir, args_dataset, or
 
     return shap_values, highlight_map
 
-def explain_with_pebex(clf, img_tensor, class_names, output_dir, args_dataset, org_img, top_k=3):
+def explain_with_pebex(clf, img_tensor, class_names, output_dir, args_dataset, org_img):
     """Giải thích bằng PEBEX với visualization tương tự SHAP"""
     print("🔍 Đang chạy PEBEX...")
     output_dir = f"{output_dir}/{args_dataset}"
     pebex = PEBEXExplainer(clf.model, class_names)
     heatmap, pred_class = pebex.explain_one(img_tensor.squeeze(0), mode="black")
-    
-    # Lưu kết quả
-    output_path = Path(output_dir) / "pebex"
-    output_path.mkdir(parents=True, exist_ok=True)
-    
+
     # Lưu kết quả
     output_path = Path(output_dir) / "pebex"
     output_path.mkdir(parents=True, exist_ok=True)
@@ -397,7 +370,7 @@ def explain_with_pebex(clf, img_tensor, class_names, output_dir, args_dataset, o
 
     return heatmap
 
-def  visualize_counterfactual_explanation(classifier, org_img, heatmap, model_name, pred_class, save_path=None, percentile_threshold=70, alpha=0.5, cmap='jet'):
+def  visualize_counterfactual_explanation(classifier, org_img, heatmap, model_name, pred_class, save_path=None, percentile_threshold=95, alpha=0.5, cmap='jet'):
     """
     Visualize heatmap (PEBEX) giống saliency map overlay lên ảnh gốc.
     
@@ -427,16 +400,19 @@ def  visualize_counterfactual_explanation(classifier, org_img, heatmap, model_na
         thresh_val = np.percentile(heatmap_norm, percentile_threshold)
         mask = (heatmap_norm >= thresh_val).astype(np.uint8)
 
-    blurred = cv2.GaussianBlur(org_img, (11, 11), 50)
+    # blurred = cv2.GaussianBlur(org_img, (11, 11), 50)
 
     mask_3d = np.repeat(mask[:, :, np.newaxis], 3, axis=2)
     perturbed_img = org_img.copy()
-    perturbed_img[mask_3d == 1] = blurred[mask_3d == 1]
+    noise = np.random.uniform(0, 255, org_img.shape).astype(np.float32)
+
+    perturbed_img[mask_3d == 1] = noise[mask_3d == 1]
+    # perturbed_img[mask_3d == 1] = 0
 
     # 5. Chuẩn bị input cho model
     perturbed_tensor = torch.from_numpy(perturbed_img.transpose(2,0,1)).unsqueeze(0).float().to(device)
     perturbed_tensor = perturbed_tensor / 255.0
-
+ 
     classifier.model.eval()
     with torch.no_grad():
         outputs = classifier.model(perturbed_tensor)
@@ -464,107 +440,3 @@ def  visualize_counterfactual_explanation(classifier, org_img, heatmap, model_na
         plt.savefig(save_path, dpi=200, bbox_inches="tight")
     plt.show()
     plt.close(fig)
-
-
-def main(args_dataset, args_model_name):
-    # Cấu hình
-    data_dir = "data"  # có thể là "data" hoặc "data/animals"
-    output_dir = "outputs"  # Sử dụng thư mục outputs chính
-    sample_output_dir = "outputs/sample_explanation"  # Thư mục cho kết quả mẫu
-    img_size = 224
-    
-    print("🚀 Bắt đầu script...")
-    
-    try:
-        if args_dataset.lower() == 'animals': 
-            clf = AnimalImageClassifier(data_dir=data_dir, output_dir=output_dir, img_size=img_size, args_model=args_model_name)
-
-            # Lấy mẫu ngẫu nhiên từ tập động vật
-            print("\n🖼️  Lấy mẫu ngẫu nhiên từ dataset động vật...")
-            img_tensor, img_np, filename, org_img, selected_class = load_sample_from_animals(data_dir, img_size)
-            print(f"   - Ảnh gốc shape: {np.array(org_img).shape}")
-        elif args_dataset.lower() == 'sars-cov2-ct':
-        # Khởi tạo classifier
-            clf = COVIDClassifier(data_dir=data_dir, output_dir=output_dir, img_size=img_size, args_model=args_model_name)
-
-            # Lấy mẫu từ COVID
-            print("\n🖼️  Lấy mẫu từ tập COVID...")
-            img_tensor, img_np, filename, org_img = load_sample_from_covid(data_dir, img_size)
-            print(f"   - Ảnh gốc shape: {np.array(org_img).shape}")
-        elif args_dataset.lower() == 'caltech-101':
-            clf = CaltechImageClassifier(data_dir=data_dir, output_dir=output_dir, img_size=img_size, args_model=args_model_name)
-            # Lấy mẫu từ Caltech-101
-            print("\n🖼️  Lấy mẫu từ tập Caltech-101...")
-            img_tensor, img_np, filename, org_img, selected_class = load_sample_from_caltech(data_dir, img_size)
-            print(f"   - Ảnh gốc shape: {np.array(org_img).shape}")
-        elif args_dataset.lower() == 'brain-tumor':
-            clf = BrainTumorClassifier(data_dir=data_dir, output_dir=output_dir, img_size=img_size, args_model=args_model_name)
-            # Lấy mẫu từ thư mục Testing trong brain-tumor
-            print("\n🖼️  Lấy mẫu từ thư mục Testing của tập Brain-tumor...")
-            img_tensor, img_np, filename, org_img, selected_class = load_sample_from_brain_tumor(data_dir, img_size)
-            print(f"   - Ảnh gốc shape: {np.array(org_img).shape}")
-
-        clf._build_dataloaders()
-        clf.load_trained_model()
-        
-        print("📊 Thông tin mô hình:")
-        print(f"   - Classes: {clf.class_names}")
-        print(f"   - Device: {device}")
-        
-        # Set random seed
-        np.random.seed(42)
-        torch.manual_seed(42)
-        
-        # Dự đoán với mô hình
-        print("\n🔮 Dự đoán với mô hình...")
-        pred_class, confidence, probs = predict_with_model(clf.model, img_tensor)
-        # Xác định index lớp đúng dựa trên tên class được chọn
-        if selected_class in clf.class_names:
-            true_class = clf.class_names.index(selected_class)
-        else:
-            raise ValueError(f"Lớp '{selected_class}' không nằm trong class_names của mô hình: {clf.class_names}")
-        
-        print(f"   - Ảnh: {filename}")
-        print(f"   - True class: {clf.class_names[true_class]} (index: {true_class})")
-        print(f"   - Predicted class: {clf.class_names[pred_class]} (index: {pred_class})")
-        print(f"   - Confidence: {confidence:.4f}")
-        print(f"   - Prediction correct: {pred_class == true_class}")
-        
-        # In xác suất cho tất cả classes
-        print("\n📈 Xác suất dự đoán:")
-        for i, (class_name, prob) in enumerate(zip(clf.class_names, probs)):
-            print(f"   - {class_name}: {prob:.4f}")
-        
-        # Nếu dự đoán đúng, giải thích quyết định
-        if pred_class == true_class:
-            # LIME
-            lime_explanation, lime_mask = explain_with_lime(clf, img_np, clf.class_names, sample_output_dir, args_dataset, org_img)
-            # SHAP
-            shap_values, shap_heatmap = explain_with_shap(clf, img_tensor, clf.class_names, sample_output_dir, args_dataset, org_img)
-
-            # PEBEX
-            pebex_heatmap = explain_with_pebex(clf, img_tensor, clf.class_names, sample_output_dir, args_dataset, org_img)
-            
-            print(f"\n💾 Kết quả đã được lưu trong: {sample_output_dir}")
-            print("   - LIME: outputs/sample_explanation/lime/lime_explanation.png")
-            print("   - SHAP: outputs/sample_explanation/shap/shap_explanation.png")
-            print("   - PEBEX: outputs/sample_explanation/pebex/pebex_explanation.png")
-            
-        else:
-            print(f"\n❌ Dự đoán sai! Không thể giải thích quyết định.")
-            print("   Hãy thử với mẫu khác...")
-        
-    except Exception as e:
-        print(f"❌ Lỗi: {e}")
-        import traceback
-        traceback.print_exc()
-        input("Nhấn Enter để tiếp tục...")
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--dataset', type=str, choices=['animals', 'sars-cov2', 'caltech-101', 'brain-tumor'], default='animals')
-    parser.add_argument('--model', type=str, choices=["efficientnet_b3", "resnet50", "densenet121", "mobilenet_v3", "vgg19"], default="efficientnet_b3")
-
-    dataset = parser.parse_args().dataset
-    model_name = parser.parse_args().model
-    main(dataset, model_name)

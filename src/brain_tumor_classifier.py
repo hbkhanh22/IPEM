@@ -3,7 +3,6 @@ import json
 import os
 import random
 from pathlib import Path
-from typing import List, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -17,7 +16,6 @@ from torch.utils.data import DataLoader, Subset, random_split
 from torchvision import models, transforms
 from torchvision.datasets import ImageFolder
 from tqdm import tqdm
-from collections import defaultdict
 
 from xai_metrics import XAIEvaluator
 from PIL import ImageFile

@@ -1,6 +1,5 @@
 from typing import List, Tuple
 
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
@@ -103,12 +102,12 @@ class PEBEXExplainer:
         
         # Tính predicted_label từ importance scores
         pred_label_from_importance = self._predict_from_importance(
-            baseline_logits, importance_map, gh, gw, ph, pw
+            baseline_logits, importance_map
         )
         
         return heat, pred_label_from_importance
 
-    def _predict_from_importance(self, baseline_logits, importance_map, gh, gw, ph, pw):
+    def _predict_from_importance(self, baseline_logits, importance_map):
         """
         Tính predicted_label từ importance scores.
         
