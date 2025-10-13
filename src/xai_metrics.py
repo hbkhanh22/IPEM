@@ -1,11 +1,9 @@
 import numpy as np
 import torch
-from pathlib import Path
-from typing import List, Union
+from typing import List
 from lime import lime_image
 import shap
 from pebex_explainer import PEBEXExplainer  # đã viết ở trên
-from skimage.segmentation import mark_boundaries
 from sklearn.metrics import accuracy_score
 import time
 
@@ -31,9 +29,9 @@ class XAIEvaluator:
                         (np.linalg.norm(expl_vecs[i]) * np.linalg.norm(expl_vecs[i+1]) + 1e-8))
         return np.mean(sims), np.std(sims)
 
-    @staticmethod
-    def local_accuracy(y_model, y_local):
-        return accuracy_score(y_model, y_local)
+    # @staticmethod
+    # def local_accuracy(y_model, y_local):
+    #     return accuracy_score(y_model, y_local)
 
     @staticmethod
     def stability(expl_vecs):
@@ -134,9 +132,9 @@ class XAIEvaluator:
             "LIME_Fidelity": self.fidelity(y_model, y_local),
             "LIME_Comprehensibility": mu_comp,
             "LIME_Consistency": mu_cons,
-            "LIME_LocalAcc": self.local_accuracy(y_model, y_local),
+            #"LIME_LocalAcc": self.local_accuracy(y_model, y_local),
             "LIME_Stability": self.stability(expl_vecs),
-            "LIME_Similarity": mu_cons,
+            # "LIME_Similarity": mu_cons,
             "LIME_Robustness": self.robustness(expl_vecs),
             "LIME_Time": exp_time,
         }
@@ -306,30 +304,30 @@ class XAIEvaluator:
         expl_vecs_sub = [expl_vecs[i] for i in subset.cpu().numpy()]
         robustness_val = float(np.mean([np.linalg.norm(a - b) for a, b in zip(expl_vecs_sub, vecs_largep)]))
         print("Done robustness_val")
-        # 9) Similarity (mean pairwise cosine between normalized vectors)
-        try:
-            from sklearn.metrics.pairwise import cosine_similarity
-            M = np.stack([v / (np.linalg.norm(v) + 1e-8) for v in expl_vecs], axis=0)
-            S = cosine_similarity(M)
-            n = S.shape[0]
-            if n > 1:
-                sim_vals = S[~np.eye(n, dtype=bool)]
-                similarity_val = float(sim_vals.mean())
-            else:
-                similarity_val = 1.0
-        except Exception:
-            similarity_val = float(np.nan)
+        # # 9) Similarity (mean pairwise cosine between normalized vectors)
+        # try:
+        #     from sklearn.metrics.pairwise import cosine_similarity
+        #     M = np.stack([v / (np.linalg.norm(v) + 1e-8) for v in expl_vecs], axis=0)
+        #     S = cosine_similarity(M)
+        #     n = S.shape[0]
+        #     if n > 1:
+        #         sim_vals = S[~np.eye(n, dtype=bool)]
+        #         similarity_val = float(sim_vals.mean())
+        #     else:
+        #         similarity_val = 1.0
+        # except Exception:
+        #     similarity_val = float(np.nan)
         time_end = time.time()
         exp_time = time_end - time_start
-        print("Done similarity_val")
+        # print("Done similarity_val")
         # 10) Compose results
         results = {
             "SHAP_Fidelity": float(self.fidelity(y_model, y_local)),        # accuracy
             "SHAP_Comprehensibility": float(mu_comp),
             "SHAP_Consistency": float(mu_cons),
-            "SHAP_LocalAcc": float(self.local_accuracy(y_model, y_local)),
+            # "SHAP_LocalAcc": float(self.local_accuracy(y_model, y_local)),
             "SHAP_Stability": float(stability_val),
-            "SHAP_Similarity": float(similarity_val),
+            # "SHAP_Similarity": float(similarity_val),
             "SHAP_Robustness": float(robustness_val),
             "SHAP_Time": exp_time,
         }
@@ -378,9 +376,9 @@ class XAIEvaluator:
             "PEBEX_Fidelity": self.fidelity(all_y_model, all_y_local),
             "PEBEX_Comprehensibility": mu_comp,
             "PEBEX_Consistency": mu_cons,
-            "PEBEX_LocalAcc": self.local_accuracy(all_y_model, all_y_local),
+            # "PEBEX_LocalAcc": self.local_accuracy(all_y_model, all_y_local),
             "PEBEX_Stability": self.stability(all_expl_vecs),
-            "PEBEX_Similarity": mu_cons,
+            # "PEBEX_Similarity": mu_cons,
             "PEBEX_Robustness": self.robustness(all_expl_vecs),
             "PEBEX_Time": exp_time,
         }

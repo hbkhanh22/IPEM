@@ -2,8 +2,7 @@
 Script để lấy một mẫu từ tập COVID và sử dụng 3 mô hình LIME, SHAP và PEBEX 
 để dự đoán và giải thích quyết định mô hình
 """
-import os
-import random
+
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
@@ -16,6 +15,7 @@ from pebex_explainer import PEBEXExplainer
 from lime import lime_image
 from skimage.segmentation import mark_boundaries, slic
 import shap
+import cv2
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -261,7 +261,7 @@ def explain_with_lime(clf, img_np, class_names, output_dir, args_dataset, org_im
     )
     return explanation, mask
 
-def explain_with_shap(clf, img_tensor, class_names, output_dir, args_dataset, org_img, top_k=3):
+def explain_with_shap(clf, img_tensor, class_names, output_dir, args_dataset, org_img, batch_size=8, top_k=3):
     """Giải thích bằng SHAP"""
     print("🔍 Đang chạy SHAP...")
     output_dir = f"{output_dir}/{args_dataset}"
@@ -270,7 +270,7 @@ def explain_with_shap(clf, img_tensor, class_names, output_dir, args_dataset, or
     # Tạo background (có thể dùng ảnh trung bình hoặc ảnh khác)
     background = torch.zeros_like(img_tensor).to(device)
     
-    explainer = shap.GradientExplainer(clf.model, background)
+    explainer = shap.GradientExplainer(clf.model, background, batch_size=batch_size)
     shap_values = explainer.shap_values(img_tensor.to(device))
     
     # Xử lý shap_values (có thể là list hoặc array)
@@ -278,7 +278,6 @@ def explain_with_shap(clf, img_tensor, class_names, output_dir, args_dataset, or
         shap_array = np.array(shap_values)  # (num_classes, 1, C, H, W)
     else:
         shap_array = shap_values  # (1, C, H, W, num_classes) hoặc dạng khác
-    #shap_array.resize((org_img.shape))
     # Lấy class được dự đoán
     pred_class, _, _ = predict_with_model(clf.model, img_tensor)
     org_img_np = np.array(org_img)
@@ -298,20 +297,9 @@ def explain_with_shap(clf, img_tensor, class_names, output_dir, args_dataset, or
         if arr.ndim >= 4 and arr.shape[-1] == len(class_names):
             arr = arr[..., pred_class]
         # Đưa về (C, H, W) nếu có thể
-        if arr.ndim >= 3:
-            # Ưu tiên coi 2 trục cuối là (H, W)
-            while arr.ndim > 3:
-                arr = np.sum(np.abs(arr), axis=0)
-            if arr.shape[0] in (1, 3):
-                heatmap = np.sum(np.abs(arr), axis=0)
-            else:
-                # Nếu không rõ kênh, tổng mọi trục trừ 2 trục cuối
-                while arr.ndim > 2:
-                    arr = np.sum(np.abs(arr), axis=0)
-                heatmap = arr
-        else:
-            # Không suy luận được -> tạo zeros để tránh lỗi
-            heatmap = np.zeros((224, 224), dtype=float)
+        while arr.ndim > 2:
+            arr = np.sum(np.abs(arr), axis=0)
+        heatmap = arr
             
     # Resize heatmap về cùng kích thước ảnh gốc
     heatmap_resized = resize(
@@ -320,17 +308,24 @@ def explain_with_shap(clf, img_tensor, class_names, output_dir, args_dataset, or
         preserve_range=True
     )
     
-    # Tạo superpixel với kích thước vừa phải bằng SLIC
-    img_float = (org_img_np.astype(np.float32) / 255.0)
-    segments = slic(img_float, n_segments=10, compactness=10, sigma=1, start_label=0)
+    # # Tạo superpixel với kích thước vừa phải bằng SLIC
+    # img_float = org_img_np / 255.0
+    # segments = slic(img_float, n_segments=50, compactness=30, sigma=1, start_label=0)
+    # # Tạo heatmap highlight
+    # highlight_map = np.zeros_like(heatmap_resized, dtype=np.float32)
 
-    # Tạo heatmap highlight
-    highlight_map = np.zeros_like(heatmap_resized, dtype=np.float32)
+    # for seg_id in np.unique(segments):
+    #     mask_sp = (segments == seg_id)
+    #     if np.any(mask_sp):
+    #         highlight_map[mask_sp] = heatmap_resized[mask_sp]
 
-    for seg_id in np.unique(segments):
-        mask_sp = (segments == seg_id)
-        if np.any(mask_sp):
-            highlight_map[mask_sp] = heatmap_resized[mask_sp]
+    # 4️⃣ Làm mịn heatmap (giống Grad-CAM smoothing)
+    from scipy.ndimage import gaussian_filter
+    heatmap_smooth = gaussian_filter(heatmap_resized, sigma=4)
+
+    # 5️⃣ Chuẩn hóa [0, 1]
+    heatmap_smooth -= heatmap_smooth.min()
+    heatmap_smooth /= (heatmap_smooth.max() + 1e-8)
 
     # Lưu kết quả
     output_path = Path(output_dir) / "shap"
@@ -339,13 +334,14 @@ def explain_with_shap(clf, img_tensor, class_names, output_dir, args_dataset, or
     visualize_counterfactual_explanation(
         classifier=clf,
         org_img=org_img,
-        heatmap=highlight_map,
+        heatmap=heatmap_smooth,
         model_name="SHAP",
         pred_class=pred_class,
         save_path=save_path
     )
 
-    return shap_values, highlight_map
+    return shap_values, heatmap_smooth
+
 
 def explain_with_pebex(clf, img_tensor, class_names, output_dir, args_dataset, org_img):
     """Giải thích bằng PEBEX với visualization tương tự SHAP"""
@@ -358,7 +354,6 @@ def explain_with_pebex(clf, img_tensor, class_names, output_dir, args_dataset, o
     output_path = Path(output_dir) / "pebex"
     output_path.mkdir(parents=True, exist_ok=True)
     save_path = output_path / "pebex_explanation.png"
-    #visualize_saliency(org_img, heatmap, "PeBEx", class_names[pred_class], save_path)
     visualize_counterfactual_explanation(
         classifier=clf,
         org_img=org_img,
@@ -388,25 +383,27 @@ def  visualize_counterfactual_explanation(classifier, org_img, heatmap, model_na
         org_img = np.array(org_img)
 
     H, W = org_img.shape[:2]
-    # Resize heatmap để match với ảnh gốc
-    heatmap_resized = resize(heatmap, (H, W), preserve_range=True)
+    # # Resize heatmap để match với ảnh gốc
+    # heatmap_resized = resize(heatmap, (H, W), preserve_range=True)
 
-    # Counterfactual explanation
-    heatmap_norm = (heatmap_resized - heatmap_resized.min()) / (heatmap_resized.max() - heatmap_resized.min())
-
-    if model_name == "LIME" or model_name == "SHAP":
+    if model_name == "LIME":
+        heatmap_norm = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min())
         mask = resize(heatmap_norm, (H, W), preserve_range=True).astype(np.uint8)
+    elif model_name == "SHAP":
+        thresh_val = np.percentile(heatmap, percentile_threshold)
+        mask = (heatmap >= thresh_val).astype(np.uint8)
     else:
+        heatmap_norm = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min())
         thresh_val = np.percentile(heatmap_norm, percentile_threshold)
         mask = (heatmap_norm >= thresh_val).astype(np.uint8)
 
-    # blurred = cv2.GaussianBlur(org_img, (11, 11), 50)
+    blurred = cv2.GaussianBlur(org_img, (11, 11), 50)
 
     mask_3d = np.repeat(mask[:, :, np.newaxis], 3, axis=2)
     perturbed_img = org_img.copy()
     noise = np.random.uniform(0, 255, org_img.shape).astype(np.float32)
 
-    perturbed_img[mask_3d == 1] = noise[mask_3d == 1]
+    perturbed_img[mask_3d == 1] = blurred[mask_3d == 1]
     # perturbed_img[mask_3d == 1] = 0
 
     # 5. Chuẩn bị input cho model
@@ -427,7 +424,7 @@ def  visualize_counterfactual_explanation(classifier, org_img, heatmap, model_na
 
     # Overlay saliency map
     ax[1].imshow(org_img, alpha=1.0)
-    hm = ax[1].imshow(heatmap_resized, cmap=cmap, alpha=alpha)
+    hm = ax[1].imshow(heatmap, cmap=cmap, alpha=alpha)
     ax[1].set_title(f"{model_name} Saliency Map - Pred: {classifier.class_names[pred_class]}")
     ax[1].axis("off")
     fig.colorbar(hm, ax=ax[1], fraction=0.046, pad=0.04)
@@ -435,6 +432,10 @@ def  visualize_counterfactual_explanation(classifier, org_img, heatmap, model_na
     ax[2].imshow(perturbed_img, alpha=1.0)
     ax[2].set_title(f"Perturbed Image - Pred: {classifier.class_names[new_class]}")
     ax[2].axis("off")
+
+    # Căn chỉnh layout để 3 ảnh bằng nhau
+    plt.subplots_adjust(wspace=0.05, hspace=0)
+    plt.tight_layout()
 
     if save_path:
         plt.savefig(save_path, dpi=200, bbox_inches="tight")
