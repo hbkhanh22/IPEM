@@ -6,7 +6,7 @@ from animal_classifier import AnimalImageClassifier
 from caltech_classifier import CaltechImageClassifier
 from brain_tumor_classifier import BrainTumorClassifier
 from sample_xAI import explain_with_lime, explain_with_pebex, explain_with_shap
-from utils import load_sample_from_animals, load_sample_from_brain_tumor, load_sample_from_caltech, load_sample_from_covid, predict_with_model
+from utils import load_sample_from_animals, load_sample_from_brain_tumor, load_sample_from_caltech, predict_with_model
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

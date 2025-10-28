@@ -556,7 +556,7 @@ class XAIEvaluator:
             "PEBEX_Fidelity": self.fidelity(all_y_model, all_y_local),
             "PEBEX_Comprehensibility": mu_comp,
             "PEBEX_Consistency": mu_cons,
-            # "PEBEX_LocalAcc": self.local_accuracy(all_y_model, all_y_local),
+            # "PEBEX_LocalAcc": self.local_accuracy(all_y_model, all_y_local)
             "PEBEX_Stability": self.stability(all_expl_vecs),
             # "PEBEX_Similarity": mu_cons,
             "PEBEX_Robustness": self.robustness(all_expl_vecs),
