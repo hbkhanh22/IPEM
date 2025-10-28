@@ -2,8 +2,9 @@
 # Ignore Datasets (Images)
 # =============================
 data/
-!data/load_data.ipynb
-!data/README.md
+!data/animals
+!data/brain-tumor
+!data/caltech-101
 
 # =============================
 # Python cache & temp files

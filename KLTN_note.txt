@@ -1,0 +1,9 @@
+Những thứ cần cải thiện
+- Sử dụng thêm các SOTA cho các mô hình deep learning trong những năm gần đây, thay vì sử dụng các mô hình cũ.
+- Thống kê tất cả các ảnh test, về việc những bức ảnh nào sau khi sử dụng phản chứng vẫn không thay đổi pred. 
+- Khả năng khi pred không thay đổi, vùng quan trọng có thể chưa chính xác, từ đó tìm cách giải quyết vấn đề trên.
+- Tìm hiểu và sử dụng thêm các mô hình giải thích. VD: Grad-CAM,...
+- Dùng metrics để đánh giá saliency-map của các phương pháp: AOPC - MORF, ...
+- ...
+    
+

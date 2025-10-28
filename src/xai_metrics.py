@@ -6,6 +6,9 @@ import shap
 from pebex_explainer import PEBEXExplainer  # đã viết ở trên
 from sklearn.metrics import accuracy_score
 import time
+import cv2
+from PIL import Image
+from torchvision import transforms
 
 class XAIEvaluator:
     def __init__(self, model: torch.nn.Module, class_names: List[str]):
@@ -86,13 +89,141 @@ class XAIEvaluator:
 
         return probs
     
+    # --------- AOPC MoRF cho toàn bộ test_loader ----------
+    def _compute_single_aopc(self, img_tensor, explanation, original_class, original_prob, 
+                           block_size=8, percentile=None, verbose=False):
+        """Tính AOPC cho một ảnh đơn lẻ"""
+        device = next(self.model.parameters()).device
+        
+        # Xử lý img_tensor
+        if isinstance(img_tensor, torch.Tensor):
+            if img_tensor.dim() == 3:  # (C, H, W)
+                img_size = img_tensor.shape[-1]  # giả sử ảnh vuông
+                img_np = img_tensor.permute(1, 2, 0).cpu().numpy()
+            else:
+                raise ValueError(f"Unsupported img_tensor shape: {img_tensor.shape}")
+        else:
+            img_np = img_tensor
+            img_size = img_np.shape[0]  # giả sử ảnh vuông
+        
+        block_per_row = img_size // block_size
+        
+        # Chuyển explanation thành numpy array
+        if isinstance(explanation, torch.Tensor):
+            explanation = explanation.detach().cpu().numpy()
+        
+        # Resize explanation về đúng kích thước
+        if explanation.shape != (img_size, img_size):
+            explanation = cv2.resize(explanation, (img_size, img_size))
+        
+        # Tạo blocks từ explanation
+        blocks_dict = {}
+        key = 0
+        
+        for i in range(0, img_size, block_size):
+            for j in range(0, img_size, block_size):
+                block = explanation[i:i + block_size, j:j + block_size]
+                block_sum = np.sum(block)
+                blocks_dict[key] = (block, block_sum)
+                key += 1
+        
+        # Sắp xếp blocks theo importance
+        sorted_blocks = sorted(blocks_dict.items(), key=lambda x: x[1][1], reverse=True)
+        total_sum_blocks = sum(block_sum[1] for block_sum in list(blocks_dict.values()))
+        
+        # Tính percentile breaking point nếu có
+        breaking_pct_value = None
+        if percentile is not None:
+            breaking_pct_value = (percentile / 100) * total_sum_blocks
+        
+        # Chuẩn bị ảnh để perturb
+        img_pred_aopc = img_np.copy()
+        
+        # Transform để đưa vào model
+        transform = transforms.Compose([
+            # transforms.ToPILImage(),
+            transforms.Resize((img_size, img_size)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
+        
+        # Xử lý original_class và original_prob
+        if isinstance(original_class, torch.Tensor):
+            original_class = original_class.item()
+        if isinstance(original_prob, torch.Tensor):
+            original_prob = original_prob.cpu().numpy()
+        
+        # Tính AOPC
+        AOPC = []
+        count_blocks = 0
+        sum_blocks = 0
+        
+        for i in range(len(blocks_dict)):
+            ref_block_index = sorted_blocks[i][0]
+            row = ref_block_index // block_per_row
+            col = ref_block_index % block_per_row
+            
+            # Perturb block này
+            img_pred_aopc[row * block_size:row * block_size + block_size, 
+                         col * block_size:col * block_size + block_size] = self._make_perturbation(
+                img_pred_aopc[row * block_size:row * block_size + block_size, 
+                             col * block_size:col * block_size + block_size]
+            )
+            
+            # Đưa vào model
+            img_pil = Image.fromarray((img_pred_aopc * 255).astype(np.uint8))
+            input_tensor = transform(img_pil).unsqueeze(0).to(device)
+            
+            with torch.no_grad():
+                output = self.model(input_tensor)
+            
+            probs = torch.softmax(output, dim=1)
+            class_prob_after = probs[0, original_class].item()
+            
+            # Tính delta
+            original_prob_val = original_prob[original_class]
+            delta = original_prob_val - class_prob_after
+            AOPC.append(delta)
+            
+            count_blocks += 1
+            
+            # Kiểm tra breaking condition
+            if percentile is not None:
+                sum_blocks += np.sum(sorted_blocks[i][1][0])
+                if sum_blocks >= breaking_pct_value:
+                    break
+        
+        return (original_class, AOPC, np.sum(AOPC) / count_blocks)
+    
+    def _make_perturbation(self, block, mode='noise', ksize=(11, 11), sigma=50):
+        """Tạo perturbation cho một block"""
+        if mode == 'noise':
+            noise = np.random.normal(0, 0.1, block.shape)
+            return np.clip(block + noise, 0, 1)
+        elif mode == 'zero':
+            return np.zeros_like(block)
+        elif mode == 'mean':
+            return np.full_like(block, np.mean(block))
+        elif mode == "blur":
+            k_h = min(ksize[0], block.shape[0] | 1)  # |1 để đảm bảo lẻ
+            k_w = min(ksize[1], block.shape[1] | 1)
+            # Áp dụng Gaussian blur
+            blurred = cv2.GaussianBlur(block, (k_w, k_h), sigma)
+            return blurred
+        else:
+            return block
+
     # --------- LIME ----------
-    def evaluate_with_lime(self, samples, num_samples=1000):
+    def evaluate_with_lime(self, samples, num_samples=1000, compute_aopc=True, block_size=8, percentile=None):
+        device = next(self.model.parameters()).device
+
         explainer = lime_image.LimeImageExplainer()
         results = {}
 
         y_model, y_local = [], []
         expl_vecs, used_feats = [], []
+        all_aopc_scores = []  # lưu original probabilities
+        
         time_start = time.time()
         for idx, (img_t, label) in enumerate(samples):
             # img_t shape: (C,H,W)
@@ -122,7 +253,26 @@ class XAIEvaluator:
 
             y_model.append(label)
             y_local.append(top_label)
+            
+            # Lưu data để tính AOPC
+            if compute_aopc:
+                with torch.no_grad():
+                    img_tensor = img_t.unsqueeze(0).to(device)
+                    original_output = self.model(img_tensor)
+                    original_prob = torch.softmax(original_output, dim=1)[0]
 
+                _, AOPC_list, mean_AOPC = self._compute_single_aopc(
+                    img_tensor=img_tensor.squeeze(0),
+                    explanation=mask,
+                    original_class=top_label,
+                    original_prob=original_prob,
+                    block_size=block_size,
+                    percentile=percentile,
+                    verbose=False
+                )
+                
+                all_aopc_scores.append(mean_AOPC)
+            
         mu_comp, _ = self.comprehensibility(used_feats)
         mu_cons, _ = self.consistency(expl_vecs)
         time_end = time.time()
@@ -138,6 +288,11 @@ class XAIEvaluator:
             "LIME_Robustness": self.robustness(expl_vecs),
             "LIME_Time": exp_time,
         }
+
+        # --- Thêm AOPC nếu có ---
+        if compute_aopc and len(all_aopc_scores) > 0:
+            results["LIME_AOPC_Mean"] = float(np.mean(all_aopc_scores))
+        
         results.update(self.fcc_score(
             results["LIME_Fidelity"],
             results["LIME_Comprehensibility"],
@@ -147,7 +302,8 @@ class XAIEvaluator:
 
 
     # --------- SHAP ----------
-    def evaluate_with_shap(self, loader, batch_size: int = 8, noise_sigma: float = 0.02, large_mask_prob: float = 0.2):
+    def evaluate_with_shap(self, loader, batch_size: int = 8, noise_sigma: float = 0.02, large_mask_prob: float = 0.2, 
+                          compute_aopc=True, block_size=8, percentile=None):
         """
         Evaluate SHAP explanations on one batch from `loader`.
         - Hỗ trợ SHAP trả về 5D (N, C, H, W, num_classes), list (num_classes of (N,C,H,W)), hoặc 4D (N,C,H,W).
@@ -177,10 +333,6 @@ class XAIEvaluator:
         print(f"SHAP completed in {time.time() - time_start} seconds")
         # Helper: chuẩn hoá raw_shap -> shap_per_class dạng numpy (num_classes, N, C, H, W)
         def to_shap_per_class_array(sv):
-            # sv có thể là: 
-            # - list of (N,C,H,W) length = num_classes
-            # - numpy array 5D (N,C,H,W,num_classes)
-            # - numpy array 4D (N,C,H,W)
             if isinstance(sv, list):
                 # mỗi phần tử (N,C,H,W)
                 arrs = []
@@ -286,8 +438,7 @@ class XAIEvaluator:
         subset = torch.randperm(N)[: max(1, N // 10)]  # ví dụ 10%
         raw_shap_largep = explainer.shap_values(imgs_largep[subset])
         shap_largep_per_class = to_shap_per_class_array(raw_shap_largep)
-        # mask_np = mask.cpu().numpy()
-        # shap_largep_per_class = shap_per_class * (1.0 - mask_np)
+
 
         with torch.no_grad():
             y_logits_sub = self.model(imgs_largep[subset])
@@ -304,33 +455,41 @@ class XAIEvaluator:
         expl_vecs_sub = [expl_vecs[i] for i in subset.cpu().numpy()]
         robustness_val = float(np.mean([np.linalg.norm(a - b) for a, b in zip(expl_vecs_sub, vecs_largep)]))
         print("Done robustness_val")
-        # # 9) Similarity (mean pairwise cosine between normalized vectors)
-        # try:
-        #     from sklearn.metrics.pairwise import cosine_similarity
-        #     M = np.stack([v / (np.linalg.norm(v) + 1e-8) for v in expl_vecs], axis=0)
-        #     S = cosine_similarity(M)
-        #     n = S.shape[0]
-        #     if n > 1:
-        #         sim_vals = S[~np.eye(n, dtype=bool)]
-        #         similarity_val = float(sim_vals.mean())
-        #     else:
-        #         similarity_val = 1.0
-        # except Exception:
-        #     similarity_val = float(np.nan)
+
         time_end = time.time()
         exp_time = time_end - time_start
-        # print("Done similarity_val")
-        # 10) Compose results
+
         results = {
-            "SHAP_Fidelity": float(self.fidelity(y_model, y_local)),        # accuracy
+            "SHAP_Fidelity": float(self.fidelity(y_model, y_local)),
             "SHAP_Comprehensibility": float(mu_comp),
             "SHAP_Consistency": float(mu_cons),
-            # "SHAP_LocalAcc": float(self.local_accuracy(y_model, y_local)),
             "SHAP_Stability": float(stability_val),
-            # "SHAP_Similarity": float(similarity_val),
             "SHAP_Robustness": float(robustness_val),
             "SHAP_Time": exp_time,
         }
+
+        # Tính AOPC nếu được yêu cầu
+        if compute_aopc and len(heatmaps) > 0:
+            all_aopc_scores = []
+            for i in range(N):
+                img_tensor = imgs[i]
+                mask = heatmaps[i]
+                original_class = int(y_model[i])
+                original_prob_tensor = torch.tensor(y_model_probs[i], device=device)
+
+                _, _, mean_AOPC = self._compute_single_aopc(
+                    img_tensor,
+                    mask,
+                    original_class,
+                    original_prob_tensor,
+                    block_size=block_size,
+                    percentile=percentile,
+                    verbose=False
+                )
+                all_aopc_scores.append(mean_AOPC)
+
+            if len(all_aopc_scores) > 0:
+                results["SHAP_AOPC_Mean"] = float(np.mean(all_aopc_scores))
 
         # FCC (sửa: truyền float, không truyền list)
         fcc = self.fcc_score(
@@ -343,11 +502,12 @@ class XAIEvaluator:
         return results
 
     # --------- PEBEX ----------
-    def evaluate_with_pebex(self, loader, mode="black"):
+    def evaluate_with_pebex(self, loader, mode="black", compute_aopc=True, block_size=8, percentile=None):
         pebex = PEBEXExplainer(self.model, self.class_names)
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         all_expl_vecs, all_used_feats = [], []
         all_y_model, all_y_local = [], []
+        all_aopc_scores = []  # lưu AOPC-MoRF score
         time_start = time.time()
 
         for batch_imgs, batch_labels in loader:
@@ -362,6 +522,26 @@ class XAIEvaluator:
                 all_expl_vecs.append(self.vectorize_explanation(np.abs(heat)))
                 all_used_feats.append(np.count_nonzero(np.abs(heat) > 1e-6))
                 y_local.append(pred_from_importance)
+                
+                # Lưu data để tính AOPC
+                if compute_aopc:
+                    # Tính original probability
+                    with torch.no_grad():
+                        img_tensor = imgs[i].unsqueeze(0).to(device)
+                        original_output = self.model(img_tensor)
+                        original_prob = torch.softmax(original_output, dim=1)[0]
+                        original_class = np.argmax(original_prob.cpu().numpy())
+
+                    _, _, mean_AOPC = self._compute_single_aopc(
+                        img_tensor=img_tensor.squeeze(0),
+                        explanation=heat,
+                        original_class=original_class,
+                        original_prob=original_prob,
+                        block_size=block_size,
+                        percentile=percentile,
+                        verbose=False
+                    )
+                    all_aopc_scores.append(mean_AOPC)
             
             all_y_local.extend(y_local)
             all_y_model.extend(y_model)
@@ -382,5 +562,10 @@ class XAIEvaluator:
             "PEBEX_Robustness": self.robustness(all_expl_vecs),
             "PEBEX_Time": exp_time,
         }
+
+        # --- Thêm AOPC nếu có ---
+        if compute_aopc and len(all_aopc_scores) > 0:
+            results["PEBEX_AOPC_Mean"] = float(np.mean(all_aopc_scores))
+        
         results.update(self.fcc_score(results["PEBEX_Fidelity"], results["PEBEX_Comprehensibility"], results["PEBEX_Consistency"]))
         return results

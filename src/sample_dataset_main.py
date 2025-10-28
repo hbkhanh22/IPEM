@@ -2,12 +2,11 @@ import numpy as np
 import torch
 import argparse
 
-from covid_classifier import COVIDClassifier
 from animal_classifier import AnimalImageClassifier
 from caltech_classifier import CaltechImageClassifier
 from brain_tumor_classifier import BrainTumorClassifier
-from sample_prediction import load_sample_from_animals, load_sample_from_brain_tumor, load_sample_from_caltech, load_sample_from_covid, predict_with_model, explain_with_lime, explain_with_pebex, explain_with_shap
-
+from sample_prediction import explain_with_lime, explain_with_pebex, explain_with_shap
+from utils import load_sample_from_animals, load_sample_from_brain_tumor, load_sample_from_caltech, load_sample_from_covid, predict_with_model
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -23,18 +22,9 @@ def main(args_dataset, args_model_name):
     try:
         if args_dataset.lower() == 'animals': 
             clf = AnimalImageClassifier(data_dir=data_dir, output_dir=output_dir, img_size=img_size, args_model=args_model_name)
-
             # Lấy mẫu ngẫu nhiên từ tập động vật
             print("\n🖼️  Lấy mẫu ngẫu nhiên từ dataset động vật...")
             img_tensor, img_np, filename, org_img, selected_class = load_sample_from_animals(data_dir, img_size)
-            print(f"   - Ảnh gốc shape: {np.array(org_img).shape}")
-        elif args_dataset.lower() == 'sars-cov2-ct':
-        # Khởi tạo classifier
-            clf = COVIDClassifier(data_dir=data_dir, output_dir=output_dir, img_size=img_size, args_model=args_model_name)
-
-            # Lấy mẫu từ COVID
-            print("\n🖼️  Lấy mẫu từ tập COVID...")
-            img_tensor, img_np, filename, org_img = load_sample_from_covid(data_dir, img_size)
             print(f"   - Ảnh gốc shape: {np.array(org_img).shape}")
         elif args_dataset.lower() == 'caltech-101':
             clf = CaltechImageClassifier(data_dir=data_dir, output_dir=output_dir, img_size=img_size, args_model=args_model_name)
