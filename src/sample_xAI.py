@@ -1,8 +1,3 @@
-"""
-Script để lấy một mẫu từ tập COVID và sử dụng 3 mô hình LIME, SHAP và PEBEX 
-để dự đoán và giải thích quyết định mô hình
-"""
-
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
@@ -10,13 +5,14 @@ from pathlib import Path
 from skimage.transform import resize
 from torchvision import transforms
 from PIL import Image
-
-
 from pebex_explainer import PEBEXExplainer
 from lime import lime_image
 import shap
 import cv2
 from utils import predict_with_model
+import torch.nn as nn
+from pytorch_grad_cam import GradCAM
+from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -56,6 +52,7 @@ def explain_with_lime(clf, img_np, class_names, output_dir, args_dataset, org_im
             probs = torch.softmax(logits, dim=1).cpu().numpy()
         
         return probs
+
     
     explainer = lime_image.LimeImageExplainer()
     explanation = explainer.explain_instance(
@@ -68,6 +65,8 @@ def explain_with_lime(clf, img_np, class_names, output_dir, args_dataset, org_im
     
     # Lấy mask cho class được dự đoán
     pred_class = np.argmax(predict_proba_fn(np.array([img_np])))
+    original_probs = predict_proba_fn(np.array([img_np]))[0]
+
     temp, mask = explanation.get_image_and_mask(
         label=pred_class, 
         positive_only=True, 
@@ -83,7 +82,8 @@ def explain_with_lime(clf, img_np, class_names, output_dir, args_dataset, org_im
         heatmap=mask,
         model_name="LIME",
         pred_class=pred_class,
-        output_path=None
+        original_probs=original_probs,
+        output_path=output_path
     )
     return explanation, mask
 
@@ -106,7 +106,7 @@ def explain_with_shap(clf, img_tensor, class_names, output_dir, args_dataset, or
     else:
         shap_array = shap_values  # (1, C, H, W, num_classes) hoặc dạng khác
     # Lấy class được dự đoán
-    pred_class, _, _ = predict_with_model(clf.model, img_tensor)
+    pred_class, _, original_probs = predict_with_model(clf.model, img_tensor)
     org_img_np = np.array(org_img)
     # Tạo heatmap cho class được dự đoán dưới dạng ma trận (H, W)
     if shap_array.ndim == 5 and shap_array.shape[0] > 1 and shap_array.shape[1] == 1:
@@ -153,6 +153,7 @@ def explain_with_shap(clf, img_tensor, class_names, output_dir, args_dataset, or
         heatmap=heatmap_smooth,
         model_name="SHAP",
         pred_class=pred_class,
+        original_probs=original_probs,
         output_path=output_path
     )
 
@@ -168,21 +169,66 @@ def explain_with_pebex(clf, img_tensor, class_names, output_dir, args_dataset, o
         output_path.mkdir(parents=True, exist_ok=True)
         
     pebex = PEBEXExplainer(clf.model, class_names)
-    heatmap, pred_class = pebex.explain_one(img_tensor.squeeze(0), mode="black")
+    heatmap, pred_class = pebex.explain_slic(img_tensor.squeeze(0), mode="blur")
 
     # save_path = output_path / "pebex_explanation.png"
-    class_flag = visualize_counterfactual_explanation(
+    visualize_counterfactual_explanation(
         classifier=clf,
         org_img=org_img,
         heatmap=heatmap,
         model_name="PeBEx",
         pred_class=predict_with_model(clf.model, img_tensor)[0],
-        output_path=None
+        original_probs=predict_with_model(clf.model, img_tensor)[2],
+        output_path=output_path
     )
 
-    return heatmap, class_flag
+    return heatmap
 
-def  visualize_counterfactual_explanation(classifier, org_img, heatmap, model_name, pred_class, output_path=None, percentile_threshold=50, alpha=0.5, cmap='jet'):
+def explain_with_gradcam(clf, img_tensor, class_names, output_dir, args_dataset, org_img):
+    if output_dir:
+        output_dir = f"{output_dir}/{args_dataset}"
+        output_path = Path(output_dir) / "GradCAM"
+        output_path.mkdir(parents=True, exist_ok=True)
+    
+    def get_last_conv_layer(model):
+        """
+        Trả về module Conv2d cuối + reference layer
+        Dùng cho pytorch-grad-cam.
+        """
+        last_conv = None
+        for name, module in model.named_modules():
+            if isinstance(module, nn.Conv2d):
+                last_conv = module
+        if last_conv is None:
+            raise ValueError("❌ Không tìm thấy Conv2D nào trong model. GradCAM yêu cầu CNN.")
+        return last_conv
+
+    target_layer = get_last_conv_layer(clf.model)
+    
+    cam = GradCAM(model=clf.model, target_layers=[target_layer])
+
+    img_tensor = img_tensor.to(device)
+    with torch.no_grad():
+        logits = clf.model(img_tensor)
+        y_model = logits.argmax(1).cpu().numpy()
+
+    target = [ClassifierOutputTarget(y_model)]
+    heatmap = cam(input_tensor=img_tensor, targets=target)[0]
+
+    visualize_counterfactual_explanation(
+        classifier=clf,
+        org_img=org_img,
+        heatmap=heatmap,
+        model_name="GradCAM",
+        pred_class=predict_with_model(clf.model, img_tensor)[0],
+        original_probs=predict_with_model(clf.model, img_tensor)[2],
+        output_path=output_path
+    )
+
+    return heatmap
+
+
+def  visualize_counterfactual_explanation(classifier, org_img, heatmap, model_name, pred_class, original_probs, output_path=None, percentile_threshold=50, alpha=0.5, cmap='jet'):
     """
     Visualize heatmap (PEBEX) giống saliency map overlay lên ảnh gốc.
     
@@ -193,6 +239,7 @@ def  visualize_counterfactual_explanation(classifier, org_img, heatmap, model_na
         alpha (float): độ trong suốt của heatmap
         cmap (str): colormap để hiển thị heatmap
     """
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Chuyển ảnh về numpy
@@ -209,20 +256,14 @@ def  visualize_counterfactual_explanation(classifier, org_img, heatmap, model_na
         heatmap_norm = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min())
         mask = resize(heatmap_norm, (H, W), preserve_range=True).astype(np.uint8)
 
-    elif model_name == "SHAP":
-        thresh_val = np.percentile(heatmap, percentile_threshold)
-        mean_val = np.mean(heatmap)
-        mask = (heatmap >= mean_val).astype(np.uint8)
-        # mask = heatmap.astype(np.uint8)
-
     else:
         heatmap_norm = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min())
-        # thresh_val = np.percentile(heatmap_norm, percentile_threshold)
-        mean_val = np.mean(heatmap_norm)
-        mask = (heatmap_norm >= mean_val).astype(np.uint8)
+        # thresh_val = np.percentile(heatmap_norm, 80)
+        # mean_val = np.mean(heatmap_norm)
+        mask = (heatmap_norm >= 0.8).astype(np.uint8)
         # mask = heatmap_norm.astype(np.uint8)
 
-    blurred = cv2.GaussianBlur(org_img, (11, 11), 50)
+    blurred = cv2.GaussianBlur(org_img, (11, 11), sigmaX=50, sigmaY=50)
 
     mask_3d = np.repeat(mask[:, :, np.newaxis], 3, axis=2)
     perturbed_img = org_img.copy()
@@ -230,7 +271,7 @@ def  visualize_counterfactual_explanation(classifier, org_img, heatmap, model_na
 
     # perturbed_img[mask_3d == 1] = noise[mask_3d == 1]
     perturbed_img[mask_3d == 1] = blurred[mask_3d == 1]
-
+    # perturbed_img[mask_3d == 1] = 0
     # 5. Chuẩn bị input cho model
     perturbed_tensor = torch.from_numpy(perturbed_img.transpose(2,0,1)).unsqueeze(0).float().to(device)
     perturbed_tensor = perturbed_tensor / 255.0
@@ -250,12 +291,14 @@ def  visualize_counterfactual_explanation(classifier, org_img, heatmap, model_na
     # Overlay saliency map
     ax[1].imshow(org_img, alpha=1.0)
     hm = ax[1].imshow(heatmap, cmap=cmap, alpha=alpha)
-    ax[1].set_title(f"{model_name} Saliency Map - Pred: {classifier.class_names[pred_class]}")
+    ax[1].set_title(f"{model_name} Saliency Map - Pred: {classifier.class_names[pred_class]}\n"
+                    f"Probability: {original_probs[pred_class]:.2f}")
     ax[1].axis("off")
     fig.colorbar(hm, ax=ax[1], fraction=0.046, pad=0.04)
 
     ax[2].imshow(perturbed_img, alpha=1.0)
-    ax[2].set_title(f"Perturbed Image - Pred: {classifier.class_names[new_class]}")
+    ax[2].set_title(f"Perturbed Image - Pred: {classifier.class_names[new_class]}\n"
+                    f"Probability of {classifier.class_names[pred_class]} class: {torch.softmax(outputs, dim=1)[0][pred_class]:.2f}")
     ax[2].axis("off")
 
     # Căn chỉnh layout để 3 ảnh bằng nhau
@@ -303,7 +346,7 @@ def make_perturbation(img, mode='blur', ksize=(11, 11), sigma=50):
     else:
         return img
 
-def AOPC_MoRF(clf, img_map_path, img_path, block_size=8, block_per_row=28, percentile=None, img_size=224, verbose=False):
+def AOPC_MoRF(clf, img_map_path, img_path, mode='blur', block_size=8, block_per_row=28, percentile=None, img_size=224, verbose=False):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     total_AOPC = None
     pct = -1 if percentile is None else percentile
@@ -326,7 +369,7 @@ def AOPC_MoRF(clf, img_map_path, img_path, block_size=8, block_per_row=28, perce
     img_pred = cv2.resize(img_pred, (img_size, img_size))
     img_pred = np.float32(img_pred) / 255.0
     img_pred_aopc = img_pred.copy()
-    print(img_pred_aopc.shape)
+    # print(img_pred_aopc.shape)
     # Nếu ảnh đang là float (0–1), cần scale lại 0–255 để tạo PIL Image
     img_pred_pil = Image.fromarray((img_pred * 255).astype(np.uint8))
 
@@ -366,7 +409,7 @@ def AOPC_MoRF(clf, img_map_path, img_path, block_size=8, block_per_row=28, perce
         row = ref_block_index // block_per_row
         col = ref_block_index % block_per_row
 
-        img_pred_aopc[row * block_size : row * block_size + block_size, col * block_size : col * block_size + block_size] = make_perturbation(img_pred_aopc[row * block_size : row * block_size + block_size, col * block_size : col * block_size + block_size], mode='noise')
+        img_pred_aopc[row * block_size : row * block_size + block_size, col * block_size : col * block_size + block_size] = make_perturbation(img_pred_aopc[row * block_size : row * block_size + block_size, col * block_size : col * block_size + block_size], mode=mode)
 
         # input_tensor = transform(img_pred_pil.copy()).unsqueeze(0).to(device)
         # img_pred_aopc_uint8 = (img_pred_aopc * 255).astype(np.uint8)

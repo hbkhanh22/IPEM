@@ -9,6 +9,9 @@ import time
 import cv2
 from PIL import Image
 from torchvision import transforms
+from pytorch_grad_cam import GradCAM
+from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
+import torch.nn as nn
 
 class XAIEvaluator:
     def __init__(self, model: torch.nn.Module, class_names: List[str]):
@@ -569,3 +572,91 @@ class XAIEvaluator:
         
         results.update(self.fcc_score(results["PEBEX_Fidelity"], results["PEBEX_Comprehensibility"], results["PEBEX_Consistency"]))
         return results
+
+    def evaluate_with_GradCAM(self, loader, compute_aopc=True, block_size=8, percentile=None):
+        def get_last_conv_layer(model):
+            """
+            Trả về module Conv2d cuối + reference layer
+            Dùng cho pytorch-grad-cam.
+            """
+            last_conv = None
+            for name, module in model.named_modules():
+                if isinstance(module, nn.Conv2d):
+                    last_conv = module
+            if last_conv is None:
+                raise ValueError("❌ Không tìm thấy Conv2D nào trong model. GradCAM yêu cầu CNN.")
+            return last_conv
+
+        device = next(self.model.parameters()).device
+
+        target_layer = get_last_conv_layer(self.model)
+
+        cam = GradCAM(model=self.model, target_layers=[target_layer])
+
+        all_expl_vecs, all_used_feats = [], []
+        all_y_model, all_y_local = [], []
+        all_aopc_scores = []
+
+        time_start = time.time()
+
+        for imgs, labels in loader:
+            imgs = imgs.to(device)
+
+            with torch.no_grad():
+                logits = self.model(imgs)
+                y_model = logits.argmax(1).cpu().numpy()
+
+            for i in range(len(imgs)):
+                img = imgs[i].unsqueeze(0)
+                target = [ClassifierOutputTarget(y_model[i])]
+                heatmap = cam(input_tensor=img, targets=target)[0]
+
+                all_expl_vecs.append(self.vectorize_explanation(heatmap))
+                all_used_feats.append(np.count_nonzero(heatmap > 1e-6))
+
+                all_y_local.append(int(y_model[i]))
+
+                # AOPC
+                if compute_aopc:
+                    with torch.no_grad():
+                        original_output = self.model(img)
+                        original_prob = torch.softmax(original_output, dim=1)[0]
+
+                    _, _, mean_AOPC = self._compute_single_aopc(
+                        img_tensor=imgs[i],
+                        explanation=heatmap,
+                        original_class=int(y_model[i]),
+                        original_prob=original_prob,
+                        block_size=block_size,
+                        percentile=percentile,
+                        verbose=False
+                    )
+                    all_aopc_scores.append(mean_AOPC)
+            
+            all_y_model.extend(y_model)
+
+        time_end = time.time()
+
+        mu_comp, _ = self.comprehensibility(all_used_feats)
+        mu_cons, _ = self.consistency(all_expl_vecs)
+
+        results = {
+            "GradCAM_Fidelity": self.fidelity(all_y_model, all_y_local),
+            "GradCAM_Comprehensibility": mu_comp,
+            "GradCAM_Consistency": mu_cons,
+            "GradCAM_Stability": self.stability(all_expl_vecs),
+            "GradCAM_Robustness": self.robustness(all_expl_vecs),
+            "GradCAM_Time": time_end - time_start,
+        }
+
+        if compute_aopc and len(all_aopc_scores) > 0:
+            results["GradCAM_AOPC_Mean"] = float(np.mean(all_aopc_scores))
+
+        results.update(self.fcc_score(
+            results["GradCAM_Fidelity"],
+            results["GradCAM_Comprehensibility"],
+            results["GradCAM_Consistency"]
+        ))
+
+        return results
+

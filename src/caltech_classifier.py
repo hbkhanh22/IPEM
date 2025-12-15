@@ -314,3 +314,10 @@ class CaltechImageClassifier:
         results = evaluator.evaluate_with_pebex(self.test_loader, "mean")
         print("📊 PEBEX metrics:", results)
         return results
+
+    def run_gradcam_metrics(self):
+        """ Tính metrics cho GradCAM """
+        evaluator = XAIEvaluator(self.model, self.class_names)
+        results = evaluator.evaluate_with_GradCAM(self.test_loader)
+        print("📊 GradCAM metrics:", results)
+        return results

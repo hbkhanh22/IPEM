@@ -1,25 +1,20 @@
 from typing import List, Tuple
-
-import numpy as np
-import torch
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
 import numpy as np
 import torch
 import cv2
-from typing import Tuple, List
-
+from skimage.segmentation import slic
 
 class PEBEXExplainer:
-    def __init__(self, model: torch.nn.Module, class_names: List[str], grid_size: Tuple[int,int]=(5,5), perturb_modes: List[str]=["black", "blur", "mean", "noise"], device=None):
-        """
+    def __init__(self, model: torch.nn.Module, class_names: List[str], grid_size: Tuple[int,int]=(4,4), perturb_modes: List[str]=["black", "blur", "mean", "noise"], device=None):
+        """ 
         model: mô hình deep learning (đã load weight, eval)
-        class_names: tên các lớp (VD: ['COVID', 'NON-COVID'])
+        class_names: tên các lớp 
         grid_size: số ô chia (H, W)
         n_perturb: số lần tạo nhiễu ngẫu nhiên
         device: CPU/GPU
         """
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
         self.model = model.eval()
         self.class_names = class_names
         self.grid_size = grid_size
@@ -164,4 +159,95 @@ class PEBEXExplainer:
         predicted_label = np.argmax(adjusted_probs)
         
         return predicted_label
-    
+
+    def explain_slic(self, img_tensor, n_segments_list=[10, 20, 50], compactness=10.0, n_samples_per_scale=300, mode="black", mask_prob=0.5):
+        """
+        Sinh heatmap giải thích cho 1 ảnh sử dụng SLIC superpixels
+        
+        Args:
+            img_tensor: tensor (C,H,W) đã normalize
+            n_segments: số lượng superpixels
+            compactness: độ compact của superpixels
+            n_samples: số lượng mask combinations
+            mode: cách che ["black", "blur", "mean", "noise"]
+        Returns:
+            heatmap: importance map (H, W)
+            predicted_label: nhãn dự đoán từ importance
+        """
+
+        self.model.eval()
+        C, H, W = img_tensor.shape
+        img_np = img_tensor.permute(1, 2, 0).cpu().numpy()
+
+        with torch.no_grad():
+            pred = self.model(img_tensor.unsqueeze(0).to(self.device))
+            probs = torch.softmax(pred, dim=1).cpu().numpy()[0]
+            baseline_label = np.argmax(probs)
+            baseline_probs = probs[baseline_label]
+            baseline_logits = pred.cpu().numpy()[0]
+        
+        importance_scores = np.zeros((H, W))
+        total_mask = 0
+        
+        for n_segments in n_segments_list:
+            segments = slic(img_np, n_segments=n_segments, compactness=compactness, start_label=0, sigma=1.0)
+            n_superpixels = segments.max() + 1
+
+            masks = self._generate_masks(n_superpixels, segments, n_samples_per_scale, H, W, mask_prob)
+
+            batch_inputs = []
+
+            for mask in masks:
+                perturbed = img_np * mask[:, :, np.newaxis]
+                pt = torch.tensor(perturbed.transpose(2, 0, 1), dtype=torch.float32).unsqueeze(0)
+                batch_inputs.append(pt)
+
+            batch_inputs = torch.cat(batch_inputs, dim=0).to(self.device)
+
+            with torch.no_grad():
+                preds = self.model(batch_inputs)
+                probs_all = torch.softmax(preds, dim=1).cpu().numpy()[:, baseline_label]
+            
+            for i, (mask, score) in enumerate(zip(masks, probs_all)):
+                importance_scores += score * mask
+            
+            total_mask += len(masks)
+        
+        # Normalize importance map
+        expected_mask_value = mask_prob
+        final_heatmap = importance_scores / (expected_mask_value * total_mask)
+
+        if importance_scores.max() > importance_scores.min():
+            final_heatmap = (importance_scores - importance_scores.min()) / (importance_scores.max() - importance_scores.min())
+
+        predicted_label = self._predict_from_importance(baseline_logits, final_heatmap)
+
+        return final_heatmap, predicted_label
+
+    def _generate_masks(self, n_superpixels, segments, n_samples, H, W, mask_prob=0.5):
+        """
+        Tạo các tổ hợp mask ngẫu nhiên
+        """
+        masks = []
+        H_up = int(H * 1.5)
+        W_up = int(W * 1.5)
+        
+        segments_up = cv2.resize(segments.astype(np.float32), (W_up, H_up), 
+                            interpolation=cv2.INTER_NEAREST).astype(np.int32)
+
+        for _ in range(n_samples):
+            fragment_mask = np.random.binomial(1, mask_prob, n_superpixels)
+            mask_up = np.zeros((H_up, W_up), dtype=np.float32)
+
+            for seg_id in range(n_superpixels):
+                if fragment_mask[seg_id] == 1:
+                    mask_up[segments_up == seg_id] = 1.0
+
+            y_start = np.random.randint(0, H_up - H + 1)
+            x_start = np.random.randint(0, W_up - W + 1)
+            mask = mask_up[y_start:y_start+H, x_start:x_start+W]
+
+            # mask = cv2.GaussianBlur(mask, (11, 11), 5)
+            masks.append(mask)
+
+        return masks

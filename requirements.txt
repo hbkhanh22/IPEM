@@ -7,7 +7,7 @@
 torch>=1.12.0
 torchvision>=0.13.0
 torchaudio>=0.12.0  # For audio processing if needed
-numpy>=1.21.0
+numpy<2
 scipy>=1.7.0
 scikit-learn>=1.1.0
 

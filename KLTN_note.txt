@@ -5,3 +5,20 @@ Những thứ cần cải thiện
 - Tìm hiểu và sử dụng thêm các mô hình giải thích. VD: Grad-CAM,...
 - Dùng metrics để đánh giá saliency-map của các phương pháp: AOPC - MORF, ...
 - ...
+
+
+-------------------------------------------
+
+Note: 24/11.
+- Khi thực hiện counterfactual explanation, blur ảnh chỉ blur các vùng với mức độ như nhau --> Nên blur theo mức độ ứng với importance map
+- Cải thiện sử dụng slic, thay vì dùng patch và trượt --> có thể kết hợp với morphological fragment.
+- Nên tích hợp thêm các phương pháp giải thích khác như: RISE, Guide, GradCAM,...
+- Thêm các metrics đánh giá saliency-map.
+
+
+Morphological Fragment: 
+- Sử dụng slic để fragment ảnh ra thành nhiều mảnh rời nhau.
+- Tạo ra các tổ hợp mask bằng cách che bất kỳ một số mảnh.
+- Tích hợp các tổ hợp mask này với ảnh ban đầu, tạo ra được các ảnh đã bị che.
+- Đưa các tập ảnh bị che vào mô hình dự đoán, có được vecto xác suất.
+- Tích hợp các vecto xác suất, sinh ra importance map.
