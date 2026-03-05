@@ -13,35 +13,36 @@ class PEBEXExplainer:
         n_perturb: số lần tạo nhiễu ngẫu nhiên
         device: CPU/GPU
         """
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if device is None:
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.model = model.eval()
         self.class_names = class_names
         self.grid_size = grid_size
         self.perturb_modes = perturb_modes
-        self.device = device if device else next(model.parameters()).device
+        self.device = device
 
-    def perturb_patch(self, img_np, y1, y2, x1, x2, mode):
+    def perturb_patch(self, img_np, y1, y2, x1, x2, mode="black_blur"):
         """
-        Sinh perturbation cho 1 patch
+        Perturb 1 patch bằng cách:
+        - Tắt pixel trong vùng patch
+        - Dùng blur để smooth vùng bị mask
+        img_np: H x W x 3, float [0,1]
         """
         perturbed = img_np.copy()
-        patch = perturbed[y1:y2, x1:x2]
-        if mode == "black":
-            perturbed[y1:y2, x1:x2, :] = 0
-        elif mode == "blur":
-            blur_patch = cv2.GaussianBlur(patch, (5, 5), 0)
-            perturbed[y1:y2, x1:x2, :] = blur_patch
-        elif mode == "mean":
-            mean_val = patch.mean(axis=(0, 1), keepdims=True)
-            perturbed[y1:y2, x1:x2, :] = mean_val
-        elif mode == "noise":
-            noise = np.random.normal(0, 0.2, size=patch.shape)
-            patch += noise
-            noisy_patch = np.clip(patch, 0, 1)
-            perturbed[y1:y2, x1:x2, :] = noisy_patch
+
+        # 1. Tắt hoàn toàn patch
+        perturbed[y1:y2, x1:x2, :] = 0.0
+
+        # 2. Blur toàn ảnh (nhẹ) để smooth biên
+        if mode == "black_blur":
+            blurred = cv2.GaussianBlur(perturbed, (11, 11), 0)
+
+            # 3. Chỉ lấy vùng patch đã blur
+            perturbed[y1:y2, x1:x2, :] = blurred[y1:y2, x1:x2, :]
 
         return perturbed
+
 
     def explain_one(self, img_tensor: torch.Tensor, mode="black") -> Tuple[np.ndarray, int]:
         """
@@ -160,7 +161,7 @@ class PEBEXExplainer:
         
         return predicted_label
 
-    def explain_slic(self, img_tensor, n_segments_list=[10, 20, 50], compactness=10.0, n_samples_per_scale=300, mode="black", mask_prob=0.5):
+    def explain_slic(self, img_tensor, n_segments_list=[20, 30], compactness=10.0, n_samples_per_scale=200, mode="black", mask_prob=0.5):
         """
         Sinh heatmap giải thích cho 1 ảnh sử dụng SLIC superpixels
         
@@ -174,7 +175,7 @@ class PEBEXExplainer:
             heatmap: importance map (H, W)
             predicted_label: nhãn dự đoán từ importance
         """
-
+        # torch.backends.cudnn.enabled = False
         self.model.eval()
         C, H, W = img_tensor.shape
         img_np = img_tensor.permute(1, 2, 0).cpu().numpy()
@@ -217,8 +218,9 @@ class PEBEXExplainer:
         expected_mask_value = mask_prob
         final_heatmap = importance_scores / (expected_mask_value * total_mask)
 
-        if importance_scores.max() > importance_scores.min():
-            final_heatmap = (importance_scores - importance_scores.min()) / (importance_scores.max() - importance_scores.min())
+        if final_heatmap.max() > final_heatmap.min():
+            final_heatmap = (final_heatmap - final_heatmap.min()) / (final_heatmap.max() - final_heatmap.min())
+
 
         predicted_label = self._predict_from_importance(baseline_logits, final_heatmap)
 
@@ -251,3 +253,84 @@ class PEBEXExplainer:
             masks.append(mask)
 
         return masks
+    
+    def explain_one_mc(
+        self,
+        img_tensor: torch.Tensor,
+        n_samples: int = 400,
+        mask_prob: float = 0.5,
+        sigma_smooth: float = 0.5,
+        grid_sizes: list = [(8, 8), (4, 4)]
+    ):
+        self.model.eval()
+        C, H, W = img_tensor.shape
+        img = img_tensor.to(self.device)
+
+        with torch.no_grad():
+            baseline_logits = self.model(img.unsqueeze(0))
+            baseline_label = baseline_logits.argmax(dim=1).item()
+
+        heatmaps = []
+
+        for gh, gw in grid_sizes:
+            # ----------------------------------
+            # 1. Monte Carlo masks (vectorized)
+            # ----------------------------------
+            masks = torch.rand(n_samples, gh, gw, device=self.device) < mask_prob
+            masks = masks.float()
+
+            # Upsample mask to image size
+            masks_up = torch.nn.functional.interpolate(
+                masks.unsqueeze(1),
+                size=(H, W),
+                mode="nearest"
+            )  # (n_mc,1,H,W)
+
+            # ----------------------------------
+            # 2. Perturb images (vectorized)
+            # ----------------------------------
+            perturbed_imgs = img.unsqueeze(0) * masks_up
+
+            # ----------------------------------
+            # 3. Model inference (batch)
+            # ----------------------------------
+            with torch.no_grad():
+                preds = self.model(perturbed_imgs)
+                probs = torch.softmax(preds, dim=1)[:, baseline_label]
+
+            # ----------------------------------
+            # 4. Vectorized Monte Carlo stats
+            # ----------------------------------
+            probs = probs.view(-1, 1, 1)
+
+            on_mask = masks
+            off_mask = 1 - masks
+
+            cnt_on = on_mask.sum(dim=0) + 1e-8
+            cnt_off = off_mask.sum(dim=0) + 1e-8
+
+            mean_on = (probs * on_mask).sum(dim=0) / cnt_on
+            mean_off = (probs * off_mask).sum(dim=0) / cnt_off
+
+            var_on = ((probs - mean_on)**2 * on_mask).sum(dim=0) / cnt_on
+            var_off = ((probs - mean_off)**2 * off_mask).sum(dim=0) / cnt_off
+
+            importance = (mean_on - mean_off) / (torch.sqrt(var_on + var_off) + 1e-8)
+
+            # normalize
+            importance = (importance - importance.min()) / (importance.max() - importance.min() + 1e-8)
+
+            if sigma_smooth > 0:
+                importance = cv2.GaussianBlur(
+                    importance.cpu().numpy(),
+                    (0, 0),
+                    sigmaX=sigma_smooth
+                )
+
+            heat = cv2.resize(importance, (W, H), interpolation=cv2.INTER_CUBIC)
+            heatmaps.append(heat)
+
+        final_heat = np.mean(heatmaps, axis=0)
+        final_heat = (final_heat - final_heat.min()) / (final_heat.max() - final_heat.min() + 1e-8)
+
+        return final_heat, baseline_label

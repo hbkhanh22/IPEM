@@ -3,7 +3,7 @@ import torch
 from pathlib import Path
 from torchvision import transforms
 from PIL import Image
-
+import cv2
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -155,3 +155,53 @@ def predict_with_model(model, img_tensor):
         confidence = probs[0, pred_class].item()
     
     return pred_class, confidence, probs.cpu().numpy()[0]
+
+
+# --------- Vector hóa heatmap để tính sim ----------
+def vectorize_explanation(heatmap, k=2000):
+    flat = heatmap.flatten()
+    idx = np.argsort(-np.abs(flat))[:k]
+    vec = np.zeros_like(flat)
+    vec[idx] = flat[idx]
+    return vec
+
+def predict_proba_fn(model, imgs: np.ndarray):
+    """
+    Hàm cho LIME: nhận batch ảnh numpy (N,H,W,C) -> trả về xác suất (N,num_classes).
+    """
+    device = next(model.parameters()).device
+
+    # chuyển numpy -> torch tensor
+    if imgs.ndim == 3:   # (H,W,C)
+        imgs = np.expand_dims(imgs, axis=0)  # -> (1,H,W,C)
+
+    # scale về [0,1] nếu chưa
+    if imgs.max() > 1.0:
+        imgs = imgs / 255.0
+
+    # (N,H,W,C) -> (N,C,H,W)
+    imgs_t = torch.from_numpy(imgs).permute(0,3,1,2).float().to(device)
+
+    with torch.no_grad():
+        logits = model(imgs_t)
+        probs = torch.softmax(logits, dim=1).cpu().numpy()
+
+    return probs
+
+def _make_perturbation(block, mode='noise', ksize=(11, 11), sigma=50):
+    """Tạo perturbation cho một block"""
+    if mode == 'noise':
+        noise = np.random.normal(0, 0.1, block.shape)
+        return np.clip(block + noise, 0, 1)
+    elif mode == 'zero':
+        return np.zeros_like(block)
+    elif mode == 'mean':
+        return np.full_like(block, np.mean(block))
+    elif mode == "blur":
+        k_h = min(ksize[0], block.shape[0] | 1)  # |1 để đảm bảo lẻ
+        k_w = min(ksize[1], block.shape[1] | 1)
+        # Áp dụng Gaussian blur
+        blurred = cv2.GaussianBlur(block, (k_w, k_h), sigma)
+        return blurred
+    else:
+        return block

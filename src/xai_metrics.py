@@ -12,10 +12,11 @@ from torchvision import transforms
 from pytorch_grad_cam import GradCAM
 from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 import torch.nn as nn
+from utils import _make_perturbation, vectorize_explanation, predict_proba_fn
 
 class XAIEvaluator:
     def __init__(self, model: torch.nn.Module, class_names: List[str]):
-        self.model = model.eval()
+        self.model = model.eval()   
         self.class_names = class_names
 
     # --------- Các hàm tính metric chung ----------
@@ -35,16 +36,12 @@ class XAIEvaluator:
                         (np.linalg.norm(expl_vecs[i]) * np.linalg.norm(expl_vecs[i+1]) + 1e-8))
         return np.mean(sims), np.std(sims)
 
-    # @staticmethod
-    # def local_accuracy(y_model, y_local):
-    #     return accuracy_score(y_model, y_local)
-
     @staticmethod
     def stability(expl_vecs):
         diffs = []
         for i in range(len(expl_vecs)-1):
             diffs.append(np.linalg.norm(expl_vecs[i]-expl_vecs[i+1]))
-        return -np.mean(diffs)  # càng nhỏ càng ổn định
+        return np.mean(diffs)  # càng nhỏ càng ổn định
 
     @staticmethod
     def similarity(expl_vecs):
@@ -61,40 +58,84 @@ class XAIEvaluator:
             "FCC": fid * comp * cons
         }
     
-    # --------- Vector hóa heatmap để tính sim ----------
-    def vectorize_explanation(self, heatmap, k=2000):
-        flat = heatmap.flatten()
-        idx = np.argsort(-np.abs(flat))[:k]
-        vec = np.zeros_like(flat)
-        vec[idx] = flat[idx]
-        return vec
-    
-    def predict_proba_fn(self, imgs: np.ndarray):
+    # -----------CAM Metrics ----------
+    @staticmethod
+    def average_drop_increase(original_probs, masked_probs):
         """
-        Hàm cho LIME: nhận batch ảnh numpy (N,H,W,C) -> trả về xác suất (N,num_classes).
+        Tính Average Drop và Increase từ xác suất gốc và xác suất sau khi mask.
+        Cả 2 inputs đều là list hoặc numpy array.
+        """
+        original_probs = np.array(original_probs)
+        masked_probs = np.array(masked_probs)
+
+        drops = np.maximum(0, original_probs - masked_probs)
+        avg_drop = np.mean(drops / (original_probs + 1e-8)) * 100  # phần trăm
+
+        increases = (masked_probs > original_probs).astype(np.float32)
+        increase_rate = np.mean(increases) * 100  # phần trăm
+
+        return avg_drop, increase_rate
+    
+    @staticmethod
+    def insertion_deletion_score(self, img_tensor, heatmap, target_class, steps=20, mode="insertion"):
+        """
+        Tính Insertion/Deletion score cho một ảnh và heatmap.
+        - img_tensor: torch.Tensor, shape (C,H,W), ảnh gốc.
+        - heatmap: numpy array, shape (H,W), heatmap giải thích.
+        - target_class: int, lớp mục tiêu để theo dõi xác suất.
+        - steps: số bước perturbation.
+        - mode: "insertion" hoặc "deletion".
+        Trả về AUC score.
         """
         device = next(self.model.parameters()).device
 
-        # chuyển numpy -> torch tensor
-        if imgs.ndim == 3:   # (H,W,C)
-            imgs = np.expand_dims(imgs, axis=0)  # -> (1,H,W,C)
+        # Chuẩn bị transform
+        transform = transforms.Compose([
+            transforms.Resize((img_tensor.shape[1], img_tensor.shape[2])),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
 
-        # scale về [0,1] nếu chưa
-        if imgs.max() > 1.0:
-            imgs = imgs / 255.0
+        # Chuẩn bị ảnh nền (đen)
+        if mode == "insertion":
+            base_img = torch.zeros_like(img_tensor).to(device)
+        else:  # deletion
+            base_img = img_tensor.clone().to(device)
 
-        # (N,H,W,C) -> (N,C,H,W)
-        imgs_t = torch.from_numpy(imgs).permute(0,3,1,2).float().to(device)
+        # Chuẩn bị heatmap
+        heatmap_resized = cv2.resize(heatmap, (img_tensor.shape[2], img_tensor.shape[1]))
+        heatmap_flat = heatmap_resized.flatten()
+        indices = np.argsort(-heatmap_flat)  # sắp xếp giảm dần
 
-        with torch.no_grad():
-            logits = self.model(imgs_t)
-            probs = torch.softmax(logits, dim=1).cpu().numpy()
+        # Tính xác suất qua các bước
+        probs = []
+        for step in range(steps + 1):
+            fraction = step / steps
+            num_pixels = int(fraction * len(heatmap_flat))
 
-        return probs
+            mask = np.zeros_like(heatmap_flat)
+            mask[indices[:num_pixels]] = 1.0
+            mask = mask.reshape(heatmap_resized.shape)
+
+            # Tạo ảnh perturbed
+            if mode == "insertion":
+                perturbed_img = base_img * (1 - torch.tensor(mask).to(device)) + img_tensor * torch.tensor(mask).to(device)
+            else:  # deletion
+                perturbed_img = img_tensor * (1 - torch.tensor(mask).to(device)) + base_img * torch.tensor(mask).to(device)
+
+            perturbed_img = perturbed_img.unsqueeze(0)  # thêm batch dim
+
+            with torch.no_grad():
+                output = self.model(perturbed_img)
+                prob = torch.softmax(output, dim=1)[0, target_class].item()
+
+            probs.append(prob)
+        # Tính AUC
+        auc_score = np.trapz(probs, dx=1.0/steps)
+        return auc_score
     
     # --------- AOPC MoRF cho toàn bộ test_loader ----------
-    def _compute_single_aopc(self, img_tensor, explanation, original_class, original_prob, 
-                           block_size=8, percentile=None, verbose=False):
+    def _compute_single_aopc(self, img_tensor, explanation, original_class, original_prob, block_size=8, percentile=None, verbose=False):
         """Tính AOPC cho một ảnh đơn lẻ"""
         device = next(self.model.parameters()).device
         
@@ -168,7 +209,7 @@ class XAIEvaluator:
             
             # Perturb block này
             img_pred_aopc[row * block_size:row * block_size + block_size, 
-                         col * block_size:col * block_size + block_size] = self._make_perturbation(
+                         col * block_size:col * block_size + block_size] = _make_perturbation(
                 img_pred_aopc[row * block_size:row * block_size + block_size, 
                              col * block_size:col * block_size + block_size]
             )
@@ -197,24 +238,6 @@ class XAIEvaluator:
                     break
         
         return (original_class, AOPC, np.sum(AOPC) / count_blocks)
-    
-    def _make_perturbation(self, block, mode='noise', ksize=(11, 11), sigma=50):
-        """Tạo perturbation cho một block"""
-        if mode == 'noise':
-            noise = np.random.normal(0, 0.1, block.shape)
-            return np.clip(block + noise, 0, 1)
-        elif mode == 'zero':
-            return np.zeros_like(block)
-        elif mode == 'mean':
-            return np.full_like(block, np.mean(block))
-        elif mode == "blur":
-            k_h = min(ksize[0], block.shape[0] | 1)  # |1 để đảm bảo lẻ
-            k_w = min(ksize[1], block.shape[1] | 1)
-            # Áp dụng Gaussian blur
-            blurred = cv2.GaussianBlur(block, (k_w, k_h), sigma)
-            return blurred
-        else:
-            return block
 
     # --------- LIME ----------
     def evaluate_with_lime(self, samples, num_samples=1000, compute_aopc=True, block_size=8, percentile=None):
@@ -226,6 +249,8 @@ class XAIEvaluator:
         y_model, y_local = [], []
         expl_vecs, used_feats = [], []
         all_aopc_scores = []  # lưu original probabilities
+        orig_probs_list, masked_probs_list = [], []
+        masks_list, imgs_list = [], []
         
         time_start = time.time()
         for idx, (img_t, label) in enumerate(samples):
@@ -235,23 +260,25 @@ class XAIEvaluator:
 
             img_np = img_t.permute(1,2,0).cpu().numpy()  # (H,W,C)
 
-            # chạy lime
+            # Chạy lime
             explanation = explainer.explain_instance(
                 img_np,
-                classifier_fn=lambda ims: self.predict_proba_fn(ims),
+                classifier_fn=lambda ims: predict_proba_fn(self.model, ims),
                 top_labels=len(self.class_names),
                 hide_color=0,
                 num_samples=num_samples,
             )
 
-            top_label = np.argmax(self.predict_proba_fn(np.array([img_np]))[0])
+            top_label = np.argmax(predict_proba_fn(self.model, np.array([img_np]))[0])
 
             # lấy mask để vector hóa
             temp, mask = explanation.get_image_and_mask(
                 label=top_label, positive_only=True, num_features=8, hide_rest=False
             )
 
-            expl_vecs.append(self.vectorize_explanation(mask))
+            masks_list.append(mask)
+            imgs_list.append(img_t)
+            expl_vecs.append(vectorize_explanation(mask))
             used_feats.append(np.count_nonzero(mask))
 
             y_model.append(label)
@@ -263,7 +290,19 @@ class XAIEvaluator:
                     img_tensor = img_t.unsqueeze(0).to(device)
                     original_output = self.model(img_tensor)
                     original_prob = torch.softmax(original_output, dim=1)[0]
-
+                # compute masked prob for average drop/increase
+                try:
+                    bin_mask = (mask > 0).astype(np.float32)
+                    mask_t = torch.from_numpy(bin_mask).to(device).unsqueeze(0).unsqueeze(0)
+                    mask_t = mask_t.expand(1, img_tensor.shape[1], bin_mask.shape[0], bin_mask.shape[1])
+                    with torch.no_grad():
+                        masked_img = img_tensor * mask_t
+                        masked_out = self.model(masked_img)
+                        masked_prob = torch.softmax(masked_out, dim=1)[0, top_label].item()
+                    orig_probs_list.append(float(original_prob[top_label].item()))
+                    masked_probs_list.append(float(masked_prob))
+                except Exception:
+                    pass
                 _, AOPC_list, mean_AOPC = self._compute_single_aopc(
                     img_tensor=img_tensor.squeeze(0),
                     explanation=mask,
@@ -295,6 +334,44 @@ class XAIEvaluator:
         # --- Thêm AOPC nếu có ---
         if compute_aopc and len(all_aopc_scores) > 0:
             results["LIME_AOPC_Mean"] = float(np.mean(all_aopc_scores))
+        # --- Thêm Average Drop/Increase nếu có ---
+        if len(orig_probs_list) > 0:
+            try:
+                avg_drop, inc_rate = self.average_drop_increase(orig_probs_list, masked_probs_list)
+                results["LIME_AvgDrop"] = float(avg_drop)
+                results["LIME_IncreaseRate"] = float(inc_rate)
+            except Exception:
+                pass
+
+        # --- Thêm Insertion/Deletion nếu có ---
+        lime_ins, lime_del = [], []
+        try:
+            for i in range(len(imgs_list)):
+                img_t = imgs_list[i]
+                mask = masks_list[i]
+                top_label = int(y_local[i])
+                # normalize mask to 2D
+                if hasattr(mask, 'ndim') and mask.ndim == 3:
+                    heat = mask[:, :, 0]
+                else:
+                    heat = mask
+
+                try:
+                    ins = self.insertion_deletion_score(img_t.to(next(self.model.parameters()).device), heat, top_label, mode="insertion")
+                    de = self.insertion_deletion_score(img_t.to(next(self.model.parameters()).device), heat, top_label, mode="deletion")
+                    lime_ins.append(float(ins))
+                    lime_del.append(float(de))
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        print(lime_ins, lime_del)
+        
+        if len(lime_ins) > 0:
+            results["LIME_Insertion"] = float(np.mean(lime_ins))
+        if len(lime_del) > 0:
+            results["LIME_Deletion"] = float(np.mean(lime_del))
         
         results.update(self.fcc_score(
             results["LIME_Fidelity"],
@@ -322,10 +399,10 @@ class XAIEvaluator:
 
         N = imgs.shape[0]
 
+        # pred_class, _, original_probs = predict_with_model(self.model, imgs)
+
         # 2) Chọn background cho SHAP (dùng 2 ảnh đầu trong batch nếu có)
         bg = imgs[:2].to(device)
-        print(next(self.model.parameters()).device)   # xem model đang ở đâu
-        print(imgs.device, bg.device)                 # xem input ở đâu
 
         # 3) Tạo GradientExplainer và tính shap_values cho batch gốc
         time_start = time.time()
@@ -334,31 +411,57 @@ class XAIEvaluator:
        
         raw_shap = explainer.shap_values(imgs)  # có thể là list / tensor / numpy
         print(f"SHAP completed in {time.time() - time_start} seconds")
-        # Helper: chuẩn hoá raw_shap -> shap_per_class dạng numpy (num_classes, N, C, H, W)
-        def to_shap_per_class_array(sv):
-            if isinstance(sv, list):
-                # mỗi phần tử (N,C,H,W)
-                arrs = []
-                for part in sv:
-                    if isinstance(part, torch.Tensor):
-                        part = part.detach().cpu().numpy()
-                    arrs.append(part)
-                stacked = np.stack(arrs, axis=0)  # (num_classes, N, C, H, W)
-                return stacked
-            else:
-                # tensor/ndarray
-                if isinstance(sv, torch.Tensor):
-                    sv = sv.detach().cpu().numpy()
-                sv = np.asarray(sv)
-                if sv.ndim == 5:
-                    # (N, C, H, W, num_classes) -> transpose to (num_classes, N, C, H, W)
-                    return np.transpose(sv, (4, 0, 1, 2, 3))
-                elif sv.ndim == 4:
-                    # (N,C,H,W) -> single class
-                    return sv[np.newaxis, ...]  # (1, N, C, H, W)
-                else:
-                    raise ValueError(f"Unsupported shap_values ndim: {sv.ndim}, shape={sv.shape}")
+        
+        def to_shap_per_class_array(svalues):
+            """
+            Chuẩn hóa SHAP output về dạng:
+            (num_classes, N, C, H, W)
+            """
+            # Case 1: list[num_classes] of (N,C,H,W)
+            if isinstance(svalues, list):
+                shap_array = np.stack([
+                    sv.detach().cpu().numpy() if torch.is_tensor(sv) else sv
+                    for sv in svalues
+                ], axis=0)
+                # -> (num_classes, N, C, H, W)
 
+            # Case 2: tensor / numpy 5D
+            elif isinstance(svalues, (np.ndarray, torch.Tensor)):
+                if torch.is_tensor(svalues):
+                    svalues = svalues.detach().cpu().numpy()
+
+                if svalues.ndim == 5:
+                    # Common layouts:
+                    # - (N, C, H, W, num_classes) -> transpose to (num_classes, N, C, H, W)
+                    # - (num_classes, N, C, H, W) -> already correct
+                    # Try to disambiguate using known number of classes if available.
+                    try:
+                        n_classes = len(self.class_names)
+                    except Exception:
+                        n_classes = None
+
+                    # If first dim equals num_classes -> assume (num_classes, N, C, H, W)
+                    if n_classes is not None and svalues.shape[0] == n_classes:
+                        shap_array = svalues
+                    # If last dim equals num_classes -> assume (N, C, H, W, num_classes)
+                    elif n_classes is not None and svalues.shape[-1] == n_classes:
+                        shap_array = np.transpose(svalues, (4, 0, 1, 2, 3))
+                    # Fallback: if last dim is >1 and likely class axis, transpose it
+                    elif svalues.shape[-1] > 1 and svalues.shape[0] != svalues.shape[-1]:
+                        shap_array = np.transpose(svalues, (4, 0, 1, 2, 3))
+                    else:
+                        raise ValueError(f"Ambiguous SHAP shape: {svalues.shape}")
+                elif svalues.ndim == 4:
+                    # Single-output model
+                    shap_array = svalues[None, ...]  # (1,N,C,H,W)
+                else:
+                    raise ValueError(f"Unsupported SHAP ndim: {svalues.ndim}")
+
+            else:
+                raise TypeError(f"Unsupported SHAP type: {type(svalues)}")
+
+            return shap_array
+        
         shap_per_class = to_shap_per_class_array(raw_shap)  # (num_classes, N, C, H, W)
         num_classes = shap_per_class.shape[0]
 
@@ -400,7 +503,7 @@ class XAIEvaluator:
             heatmaps.append(heat)
         print("Done heatmaps")
         # vectorize explanations
-        expl_vecs = [self.vectorize_explanation(h) for h in heatmaps]
+        expl_vecs = [vectorize_explanation(h) for h in heatmaps]
         used_feats = [int((np.abs(h) > 1e-6).sum()) for h in heatmaps]
         mu_comp, _ = self.comprehensibility(used_feats)
         mu_cons, _ = self.consistency(expl_vecs)
@@ -427,7 +530,7 @@ class XAIEvaluator:
         heatmaps_noisy = np.abs(sel).sum(axis=1)                # (M, H, W)
 
         # vectorize explanations
-        vecs_noisy = [self.vectorize_explanation(h) for h in heatmaps_noisy]
+        vecs_noisy = [vectorize_explanation(h) for h in heatmaps_noisy]
 
         # so sánh với expl_vecs tương ứng (chọn cùng subset)
         expl_vecs_sub = [expl_vecs[i] for i in subset.cpu().numpy()]
@@ -453,12 +556,49 @@ class XAIEvaluator:
         sel = shap_largep_per_class[y_model_sub, np.arange(M)]   # (M, C, H, W)
         heatmaps_largep = np.abs(sel).sum(axis=1)                # (M, H, W)
 
-        vecs_largep = [self.vectorize_explanation(h) for h in heatmaps_largep]
+        vecs_largep = [vectorize_explanation(h) for h in heatmaps_largep]
 
         expl_vecs_sub = [expl_vecs[i] for i in subset.cpu().numpy()]
         robustness_val = float(np.mean([np.linalg.norm(a - b) for a, b in zip(expl_vecs_sub, vecs_largep)]))
         print("Done robustness_val")
 
+        # Tính AOPC nếu được yêu cầu
+        all_aopc_scores = []
+        shap_orig_probs, shap_masked_probs = [], []
+        shap_ins, shap_del = [], []
+        if compute_aopc and len(heatmaps) > 0:
+            for i in range(N):
+                img_tensor = imgs[i]
+                mask = heatmaps[i]
+                original_class = int(y_model[i])
+                original_prob_tensor = torch.tensor(y_model_probs[i], device=device)
+
+                # compute masked prob for average drop/increase
+                try:
+                    bin_mask = (mask > np.mean(mask)).astype(np.float32)
+                    img_t = img_tensor.unsqueeze(0)
+                    mask_t = torch.from_numpy(bin_mask).to(device).unsqueeze(0).unsqueeze(0)
+                    mask_t = mask_t.expand(1, img_t.shape[1], bin_mask.shape[0], bin_mask.shape[1])
+                    with torch.no_grad():
+                        masked_img = img_t * mask_t
+                        masked_out = self.model(masked_img)
+                        masked_prob = torch.softmax(masked_out, dim=1)[0, original_class].item()
+                    shap_orig_probs.append(float(y_model_probs[i][original_class]))
+                    shap_masked_probs.append(float(masked_prob))
+                except Exception:
+                    pass
+
+                _, _, mean_AOPC = self._compute_single_aopc(
+                    img_tensor,
+                    mask,
+                    original_class,
+                    original_prob_tensor,
+                    block_size=block_size,
+                    percentile=percentile,
+                    verbose=False
+                )
+                all_aopc_scores.append(mean_AOPC)
+        
         time_end = time.time()
         exp_time = time_end - time_start
 
@@ -471,28 +611,35 @@ class XAIEvaluator:
             "SHAP_Time": exp_time,
         }
 
-        # Tính AOPC nếu được yêu cầu
-        if compute_aopc and len(heatmaps) > 0:
-            all_aopc_scores = []
-            for i in range(N):
-                img_tensor = imgs[i]
-                mask = heatmaps[i]
-                original_class = int(y_model[i])
-                original_prob_tensor = torch.tensor(y_model_probs[i], device=device)
+        if len(all_aopc_scores) > 0:
+            results["SHAP_AOPC_Mean"] = float(np.mean(all_aopc_scores))
 
-                _, _, mean_AOPC = self._compute_single_aopc(
-                    img_tensor,
-                    mask,
-                    original_class,
-                    original_prob_tensor,
-                    block_size=block_size,
-                    percentile=percentile,
-                    verbose=False
-                )
-                all_aopc_scores.append(mean_AOPC)
+        # --- Thêm Average Drop/Increase nếu có ---
+        if len(shap_orig_probs) > 0:
+            try:
+                avg_drop, inc_rate = self.average_drop_increase(shap_orig_probs, shap_masked_probs)
+                results["SHAP_AvgDrop"] = float(avg_drop)
+                results["SHAP_IncreaseRate"] = float(inc_rate)
+            except Exception:
+                pass
 
-            if len(all_aopc_scores) > 0:
-                results["SHAP_AOPC_Mean"] = float(np.mean(all_aopc_scores))
+        # --- Thêm Insertion/Deletion nếu có ---
+        try:
+            for i in range(len(heatmaps)):
+                try:
+                    ins = self.insertion_deletion_score(imgs[i], heatmaps[i], int(y_model[i]), mode="insertion")
+                    de = self.insertion_deletion_score(imgs[i], heatmaps[i], int(y_model[i]), mode="deletion")
+                    shap_ins.append(float(ins))
+                    shap_del.append(float(de))
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        if len(shap_ins) > 0:
+            results["SHAP_Insertion"] = float(np.mean(shap_ins))
+        if len(shap_del) > 0:
+            results["SHAP_Deletion"] = float(np.mean(shap_del))
 
         # FCC (sửa: truyền float, không truyền list)
         fcc = self.fcc_score(
@@ -505,12 +652,14 @@ class XAIEvaluator:
         return results
 
     # --------- PEBEX ----------
-    def evaluate_with_pebex(self, loader, mode="black", compute_aopc=True, block_size=8, percentile=None):
+    def evaluate_with_pebex(self, loader, compute_aopc=True, block_size=8, percentile=None):
         pebex = PEBEXExplainer(self.model, self.class_names)
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device = next(self.model.parameters()).device
         all_expl_vecs, all_used_feats = [], []
         all_y_model, all_y_local = [], []
         all_aopc_scores = []  # lưu AOPC-MoRF score
+        pebex_orig_probs, pebex_masked_probs = [], []
+        pebex_ins, pebex_del = [], []
         time_start = time.time()
 
         for batch_imgs, batch_labels in loader:
@@ -520,9 +669,9 @@ class XAIEvaluator:
 
             for i in range(len(imgs)):
                 # explain_one bây giờ đã trả về pred_label được tính từ importance scores
-                heat, pred_from_importance = pebex.explain_one(imgs[i].to(device), mode)
+                heat, pred_from_importance = pebex.explain_one_mc(imgs[i].to(device))
                 
-                all_expl_vecs.append(self.vectorize_explanation(np.abs(heat)))
+                all_expl_vecs.append(vectorize_explanation(np.abs(heat)))
                 all_used_feats.append(np.count_nonzero(np.abs(heat) > 1e-6))
                 y_local.append(pred_from_importance)
                 
@@ -535,6 +684,20 @@ class XAIEvaluator:
                         original_prob = torch.softmax(original_output, dim=1)[0]
                         original_class = np.argmax(original_prob.cpu().numpy())
 
+                    # compute masked prob for average drop/increase
+                    try:
+                        bin_mask = (np.abs(heat) > np.mean(np.abs(heat))).astype(np.float32)
+                        mask_t = torch.from_numpy(bin_mask).to(device).unsqueeze(0).unsqueeze(0)
+                        mask_t = mask_t.expand(1, img_tensor.shape[1], bin_mask.shape[0], bin_mask.shape[1])
+                        with torch.no_grad():
+                            masked_img = img_tensor * mask_t
+                            masked_out = self.model(masked_img)
+                            masked_prob = torch.softmax(masked_out, dim=1)[0, original_class].item()
+                        pebex_orig_probs.append(float(original_prob[original_class].item()))
+                        pebex_masked_probs.append(float(masked_prob))
+                    except Exception:
+                        pass
+
                     _, _, mean_AOPC = self._compute_single_aopc(
                         img_tensor=img_tensor.squeeze(0),
                         explanation=heat,
@@ -545,6 +708,14 @@ class XAIEvaluator:
                         verbose=False
                     )
                     all_aopc_scores.append(mean_AOPC)
+                    # insertion/deletion
+                    try:
+                        ins = self.insertion_deletion_score(imgs[i], heat, original_class, mode="insertion")
+                        de = self.insertion_deletion_score(imgs[i], heat, original_class, mode="deletion")
+                        pebex_ins.append(float(ins))
+                        pebex_del.append(float(de))
+                    except Exception:
+                        pass
             
             all_y_local.extend(y_local)
             all_y_model.extend(y_model)
@@ -559,9 +730,7 @@ class XAIEvaluator:
             "PEBEX_Fidelity": self.fidelity(all_y_model, all_y_local),
             "PEBEX_Comprehensibility": mu_comp,
             "PEBEX_Consistency": mu_cons,
-            # "PEBEX_LocalAcc": self.local_accuracy(all_y_model, all_y_local)
             "PEBEX_Stability": self.stability(all_expl_vecs),
-            # "PEBEX_Similarity": mu_cons,
             "PEBEX_Robustness": self.robustness(all_expl_vecs),
             "PEBEX_Time": exp_time,
         }
@@ -569,7 +738,19 @@ class XAIEvaluator:
         # --- Thêm AOPC nếu có ---
         if compute_aopc and len(all_aopc_scores) > 0:
             results["PEBEX_AOPC_Mean"] = float(np.mean(all_aopc_scores))
-        
+        # --- Thêm Average Drop/Increase nếu có ---
+        if len(pebex_orig_probs) > 0:
+            try:
+                avg_drop, inc_rate = self.average_drop_increase(pebex_orig_probs, pebex_masked_probs)
+                results["PEBEX_AvgDrop"] = float(avg_drop)
+                results["PEBEX_IncreaseRate"] = float(inc_rate)
+            except Exception:
+                pass
+        # --- Thêm Insertion/Deletion nếu có ---
+        if len(pebex_ins) > 0:
+            results["PEBEX_Insertion"] = float(np.mean(pebex_ins))
+        if len(pebex_del) > 0:
+            results["PEBEX_Deletion"] = float(np.mean(pebex_del))
         results.update(self.fcc_score(results["PEBEX_Fidelity"], results["PEBEX_Comprehensibility"], results["PEBEX_Consistency"]))
         return results
 
@@ -596,6 +777,8 @@ class XAIEvaluator:
         all_expl_vecs, all_used_feats = [], []
         all_y_model, all_y_local = [], []
         all_aopc_scores = []
+        gradcam_orig_probs, gradcam_masked_probs = [], []
+        gradcam_ins, gradcam_del = [], []
 
         time_start = time.time()
 
@@ -611,7 +794,7 @@ class XAIEvaluator:
                 target = [ClassifierOutputTarget(y_model[i])]
                 heatmap = cam(input_tensor=img, targets=target)[0]
 
-                all_expl_vecs.append(self.vectorize_explanation(heatmap))
+                all_expl_vecs.append(vectorize_explanation(heatmap))
                 all_used_feats.append(np.count_nonzero(heatmap > 1e-6))
 
                 all_y_local.append(int(y_model[i]))
@@ -621,6 +804,21 @@ class XAIEvaluator:
                     with torch.no_grad():
                         original_output = self.model(img)
                         original_prob = torch.softmax(original_output, dim=1)[0]
+
+                    # compute masked prob for average drop/increase
+                    try:
+                        bin_mask = (heatmap > np.mean(heatmap)).astype(np.float32)
+                        img_t = img
+                        mask_t = torch.from_numpy(bin_mask).to(device).unsqueeze(0).unsqueeze(0)
+                        mask_t = mask_t.expand(1, img_t.shape[1], bin_mask.shape[0], bin_mask.shape[1])
+                        with torch.no_grad():
+                            masked_img = img_t * mask_t
+                            masked_out = self.model(masked_img)
+                            masked_prob = torch.softmax(masked_out, dim=1)[0, int(y_model[i])].item()
+                        gradcam_orig_probs.append(float(original_prob[int(y_model[i])].item()))
+                        gradcam_masked_probs.append(float(masked_prob))
+                    except Exception:
+                        pass
 
                     _, _, mean_AOPC = self._compute_single_aopc(
                         img_tensor=imgs[i],
@@ -632,6 +830,14 @@ class XAIEvaluator:
                         verbose=False
                     )
                     all_aopc_scores.append(mean_AOPC)
+                    # insertion/deletion
+                    try:
+                        ins = self.insertion_deletion_score(imgs[i], heatmap, int(y_model[i]), mode="insertion")
+                        de = self.insertion_deletion_score(imgs[i], heatmap, int(y_model[i]), mode="deletion")
+                        gradcam_ins.append(float(ins))
+                        gradcam_del.append(float(de))
+                    except Exception:
+                        pass
             
             all_y_model.extend(y_model)
 
@@ -651,6 +857,21 @@ class XAIEvaluator:
 
         if compute_aopc and len(all_aopc_scores) > 0:
             results["GradCAM_AOPC_Mean"] = float(np.mean(all_aopc_scores))
+
+        # --- Thêm Average Drop/Increase nếu có ---
+        if len(gradcam_orig_probs) > 0:
+            try:
+                avg_drop, inc_rate = self.average_drop_increase(gradcam_orig_probs, gradcam_masked_probs)
+                results["GradCAM_AvgDrop"] = float(avg_drop)
+                results["GradCAM_IncreaseRate"] = float(inc_rate)
+            except Exception:
+                pass
+
+        # --- Thêm Insertion/Deletion nếu có ---
+        if len(gradcam_ins) > 0:
+            results["GradCAM_Insertion"] = float(np.mean(gradcam_ins))
+        if len(gradcam_del) > 0:
+            results["GradCAM_Deletion"] = float(np.mean(gradcam_del))
 
         results.update(self.fcc_score(
             results["GradCAM_Fidelity"],

@@ -53,3 +53,4 @@ env/
 Thumbs.db
 .vscode/
 .idea/
+temp/

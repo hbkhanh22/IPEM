@@ -107,8 +107,35 @@ class CaltechImageClassifier:
             model = models.vgg19(weights=models.VGG19_Weights.IMAGENET1K_V1)
             in_feats = model.classifier[6].in_features
             model.classifier[6] = nn.Linear(in_feats, len(self.class_names))
+        elif self.args_model_name == "transformer":
+            # Vision Transformer (ViT) support (torchvision >= ~0.14). Handle multiple torchvision APIs.
+            try:
+                ViTWeights = getattr(models, "ViT_B_16_Weights", None)
+                if ViTWeights is not None:
+                    model = models.vit_b_16(weights=ViTWeights.IMAGENET1K_V1)
+                else:
+                    # older torchvision might accept pretrained=True
+                    model = models.vit_b_16(pretrained=True)
+            except Exception as e:
+                raise ValueError(
+                    "ViT (vit_b_16) is not available in the installed torchvision. "
+                    "Install torchvision with ViT support (e.g. >=0.14.0) or choose another model."
+                ) from e
+
+            # Replace classifier/head to match number of classes (handle variants)
+            if hasattr(model, 'heads'):
+                # torchvision ViT usually has model.heads.head (nn.Linear)
+                if hasattr(model.heads, 'head') and isinstance(model.heads.head, nn.Linear):
+                    in_feats = model.heads.head.in_features
+                    model.heads.head = nn.Linear(in_feats, len(self.class_names))
+                elif isinstance(model.heads, nn.Linear):
+                    in_feats = model.heads.in_features
+                    model.heads = nn.Linear(in_feats, len(self.class_names))
+            elif hasattr(model, 'classifier') and isinstance(model.classifier, nn.Linear):
+                in_feats = model.classifier.in_features
+                model.classifier = nn.Linear(in_feats, len(self.class_names))
         else:
-            raise ValueError(f"Model {self.args.model_name} is not supported!")
+            raise ValueError(f"Model {self.args_model_name} is not supported!")
         
         # model = models.efficientnet_b3(weights=models.EfficientNet_B3_Weights.IMAGENET1K_V1)
         # for p in model.parameters():
@@ -311,7 +338,7 @@ class CaltechImageClassifier:
         """Tính metrics cho PEBEX"""
         evaluator = XAIEvaluator(self.model, self.class_names)
 
-        results = evaluator.evaluate_with_pebex(self.test_loader, "mean")
+        results = evaluator.evaluate_with_pebex(self.test_loader)
         print("📊 PEBEX metrics:", results)
         return results
 
