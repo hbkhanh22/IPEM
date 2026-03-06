@@ -1,0 +1,27 @@
+# CORE MACHINE LEARNING LIBRARIES
+torch>=1.12.0
+torchaudio>=0.12.0
+torchvision>=0.13.0
+numpy
+scipy>=1.7.0
+scikit-learn>=1.1.0
+
+# IMAGE PROCESSING & COMPUTER VISION
+opencv-python
+Pillow
+
+# EXPLAINABLE AI (XAI)
+shap
+lime
+gradcam
+
+# DATA VISUALIZATION
+matplotlib
+seaborn
+
+# DATA PROCESSING
+imblearn
+
+# UTILITY
+tqdm
+kagglehub
