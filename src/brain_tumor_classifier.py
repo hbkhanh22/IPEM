@@ -12,7 +12,7 @@ import torch.optim as optim
 from sklearn.metrics import classification_report, confusion_matrix, accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
 from imblearn.metrics import specificity_score
 from sklearn.utils.class_weight import compute_class_weight
-from torch.utils.data import DataLoader, Subset, random_split
+from torch.utils.data import DataLoader, random_split
 from torchvision import models, transforms
 from torchvision.datasets import ImageFolder
 from tqdm import tqdm
@@ -343,12 +343,12 @@ class BrainTumorClassifier:
         print("📊 SHAP metrics:", results)
         return results
 
-    def run_pebex_metrics(self):
-        """Tính metrics cho PEBEX"""
+    def run_ipem_metrics(self):
+        """Tính metrics cho IPEM"""
         evaluator = XAIEvaluator(self.model, self.class_names)
         
-        results = evaluator.evaluate_with_pebex(self.test_loader)
-        print("📊 PEBEX metrics:", results)
+        results = evaluator.evaluate_with_ipem(self.test_loader)
+        print("📊 IPEM metrics:", results)
         return results
 
     def run_gradcam_metrics(self):

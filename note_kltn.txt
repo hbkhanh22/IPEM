@@ -10,7 +10,7 @@ Introduction:
 - Sơ lược về các phần trong paper (mục I viết gì, II viết gì,...)
 
 Literature review
-- Bỏ đi phần Explainabel AI vs Interpretable AI
+- Bỏ đi phần Explainable AI vs Interpretable AI
 - Giới thiệu tóm tắt về 2 dạng global và local --> từ đó giới thiệu về LIME và SHAP (nhiều hơn)
 - Giới thiệu sơ lược về gradient-based
 - Vào thẳng trọng tâm (perturbation) (viết dài nhất)
@@ -19,5 +19,5 @@ Results and discussion:
 - Xem xét lại Fidelity = 1.0. 
 - Running time của PeBEx (ở tập brain tumor, thời gian chạy rất lâu) --> chạy lại lần nữa
 
-limitation and future works
+Limitation and future works
 - Không cần viết quá cụ thể, vào đúng trọng tâm là được

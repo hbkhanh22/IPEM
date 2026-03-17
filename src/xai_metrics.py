@@ -3,7 +3,7 @@ import torch
 from typing import List
 from lime import lime_image
 import shap
-from pebex_explainer import PEBEXExplainer  # đã viết ở trên
+from ipem_explainer import IPEMExplainer  # đã viết ở trên
 from sklearn.metrics import accuracy_score
 import time
 import cv2
@@ -25,10 +25,6 @@ class XAIEvaluator:
         return accuracy_score(y_true, y_pred)
 
     @staticmethod
-    def comprehensibility(used_features):
-        return np.mean(used_features), np.std(used_features)
-
-    @staticmethod
     def consistency(expl_vecs):
         sims = []
         for i in range(len(expl_vecs)-1):
@@ -44,20 +40,10 @@ class XAIEvaluator:
         return np.mean(diffs)  # càng nhỏ càng ổn định
 
     @staticmethod
-    def similarity(expl_vecs):
-        return XAIEvaluator.consistency(expl_vecs)
-
-    @staticmethod
     def robustness(expl_vecs):
         norms = [np.linalg.norm(v) for v in expl_vecs]
         return np.mean(norms)
 
-    @staticmethod
-    def fcc_score(fid, comp, cons):
-        return {
-            "FCC": fid * comp * cons
-        }
-    
     # -----------CAM Metrics ----------
     @staticmethod
     def average_drop_increase(original_probs, masked_probs):
@@ -75,64 +61,6 @@ class XAIEvaluator:
         increase_rate = np.mean(increases) * 100  # phần trăm
 
         return avg_drop, increase_rate
-    
-    @staticmethod
-    def insertion_deletion_score(self, img_tensor, heatmap, target_class, steps=20, mode="insertion"):
-        """
-        Tính Insertion/Deletion score cho một ảnh và heatmap.
-        - img_tensor: torch.Tensor, shape (C,H,W), ảnh gốc.
-        - heatmap: numpy array, shape (H,W), heatmap giải thích.
-        - target_class: int, lớp mục tiêu để theo dõi xác suất.
-        - steps: số bước perturbation.
-        - mode: "insertion" hoặc "deletion".
-        Trả về AUC score.
-        """
-        device = next(self.model.parameters()).device
-
-        # Chuẩn bị transform
-        transform = transforms.Compose([
-            transforms.Resize((img_tensor.shape[1], img_tensor.shape[2])),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ])
-
-        # Chuẩn bị ảnh nền (đen)
-        if mode == "insertion":
-            base_img = torch.zeros_like(img_tensor).to(device)
-        else:  # deletion
-            base_img = img_tensor.clone().to(device)
-
-        # Chuẩn bị heatmap
-        heatmap_resized = cv2.resize(heatmap, (img_tensor.shape[2], img_tensor.shape[1]))
-        heatmap_flat = heatmap_resized.flatten()
-        indices = np.argsort(-heatmap_flat)  # sắp xếp giảm dần
-
-        # Tính xác suất qua các bước
-        probs = []
-        for step in range(steps + 1):
-            fraction = step / steps
-            num_pixels = int(fraction * len(heatmap_flat))
-
-            mask = np.zeros_like(heatmap_flat)
-            mask[indices[:num_pixels]] = 1.0
-            mask = mask.reshape(heatmap_resized.shape)
-
-            # Tạo ảnh perturbed
-            if mode == "insertion":
-                perturbed_img = base_img * (1 - torch.tensor(mask).to(device)) + img_tensor * torch.tensor(mask).to(device)
-            else:  # deletion
-                perturbed_img = img_tensor * (1 - torch.tensor(mask).to(device)) + base_img * torch.tensor(mask).to(device)
-
-            perturbed_img = perturbed_img.unsqueeze(0)  # thêm batch dim
-
-            with torch.no_grad():
-                output = self.model(perturbed_img)
-                prob = torch.softmax(output, dim=1)[0, target_class].item()
-
-            probs.append(prob)
-        # Tính AUC
-        auc_score = np.trapz(probs, dx=1.0/steps)
-        return auc_score
     
     # --------- AOPC MoRF cho toàn bộ test_loader ----------
     def _compute_single_aopc(self, img_tensor, explanation, original_class, original_prob, block_size=8, percentile=None, verbose=False):
@@ -315,18 +243,16 @@ class XAIEvaluator:
                 
                 all_aopc_scores.append(mean_AOPC)
             
-        mu_comp, _ = self.comprehensibility(used_feats)
+        # mu_comp, _ = self.comprehensibility(used_feats)
         mu_cons, _ = self.consistency(expl_vecs)
         time_end = time.time()
         exp_time = time_end - time_start
 
         results = {
             "LIME_Fidelity": self.fidelity(y_model, y_local),
-            "LIME_Comprehensibility": mu_comp,
+            # "LIME_Comprehensibility": mu_comp,
             "LIME_Consistency": mu_cons,
-            #"LIME_LocalAcc": self.local_accuracy(y_model, y_local),
             "LIME_Stability": self.stability(expl_vecs),
-            # "LIME_Similarity": mu_cons,
             "LIME_Robustness": self.robustness(expl_vecs),
             "LIME_Time": exp_time,
         }
@@ -343,41 +269,6 @@ class XAIEvaluator:
             except Exception:
                 pass
 
-        # --- Thêm Insertion/Deletion nếu có ---
-        lime_ins, lime_del = [], []
-        try:
-            for i in range(len(imgs_list)):
-                img_t = imgs_list[i]
-                mask = masks_list[i]
-                top_label = int(y_local[i])
-                # normalize mask to 2D
-                if hasattr(mask, 'ndim') and mask.ndim == 3:
-                    heat = mask[:, :, 0]
-                else:
-                    heat = mask
-
-                try:
-                    ins = self.insertion_deletion_score(img_t.to(next(self.model.parameters()).device), heat, top_label, mode="insertion")
-                    de = self.insertion_deletion_score(img_t.to(next(self.model.parameters()).device), heat, top_label, mode="deletion")
-                    lime_ins.append(float(ins))
-                    lime_del.append(float(de))
-                except Exception:
-                    continue
-        except Exception:
-            pass
-
-        print(lime_ins, lime_del)
-        
-        if len(lime_ins) > 0:
-            results["LIME_Insertion"] = float(np.mean(lime_ins))
-        if len(lime_del) > 0:
-            results["LIME_Deletion"] = float(np.mean(lime_del))
-        
-        results.update(self.fcc_score(
-            results["LIME_Fidelity"],
-            results["LIME_Comprehensibility"],
-            results["LIME_Consistency"]
-        ))
         return results
 
 
@@ -505,7 +396,7 @@ class XAIEvaluator:
         # vectorize explanations
         expl_vecs = [vectorize_explanation(h) for h in heatmaps]
         used_feats = [int((np.abs(h) > 1e-6).sum()) for h in heatmaps]
-        mu_comp, _ = self.comprehensibility(used_feats)
+        # mu_comp, _ = self.comprehensibility(used_feats)
         mu_cons, _ = self.consistency(expl_vecs)
         print("Done mu_comp and mu_cons")
         # 7) Stability: recompute SHAP on slightly noised images and compare vectors (L2)
@@ -604,7 +495,7 @@ class XAIEvaluator:
 
         results = {
             "SHAP_Fidelity": float(self.fidelity(y_model, y_local)),
-            "SHAP_Comprehensibility": float(mu_comp),
+            # "SHAP_Comprehensibility": float(mu_comp),
             "SHAP_Consistency": float(mu_cons),
             "SHAP_Stability": float(stability_val),
             "SHAP_Robustness": float(robustness_val),
@@ -622,44 +513,18 @@ class XAIEvaluator:
                 results["SHAP_IncreaseRate"] = float(inc_rate)
             except Exception:
                 pass
-
-        # --- Thêm Insertion/Deletion nếu có ---
-        try:
-            for i in range(len(heatmaps)):
-                try:
-                    ins = self.insertion_deletion_score(imgs[i], heatmaps[i], int(y_model[i]), mode="insertion")
-                    de = self.insertion_deletion_score(imgs[i], heatmaps[i], int(y_model[i]), mode="deletion")
-                    shap_ins.append(float(ins))
-                    shap_del.append(float(de))
-                except Exception:
-                    continue
-        except Exception:
-            pass
-
-        if len(shap_ins) > 0:
-            results["SHAP_Insertion"] = float(np.mean(shap_ins))
-        if len(shap_del) > 0:
-            results["SHAP_Deletion"] = float(np.mean(shap_del))
-
-        # FCC (sửa: truyền float, không truyền list)
-        fcc = self.fcc_score(
-            results["SHAP_Fidelity"],
-            results["SHAP_Comprehensibility"],
-            results["SHAP_Consistency"]
-        )
-        results.update(fcc)
-
+            
         return results
 
-    # --------- PEBEX ----------
-    def evaluate_with_pebex(self, loader, compute_aopc=True, block_size=8, percentile=None):
-        pebex = PEBEXExplainer(self.model, self.class_names)
+    # --------- IPEM ----------
+    def evaluate_with_ipem(self, loader, compute_aopc=True, block_size=8, percentile=None):
+        ipem = IPEMExplainer(self.model, self.class_names)
         device = next(self.model.parameters()).device
         all_expl_vecs, all_used_feats = [], []
         all_y_model, all_y_local = [], []
         all_aopc_scores = []  # lưu AOPC-MoRF score
-        pebex_orig_probs, pebex_masked_probs = [], []
-        pebex_ins, pebex_del = [], []
+        IPEM_orig_probs, IPEM_masked_probs = [], []
+        IPEM_ins, IPEM_del = [], []
         time_start = time.time()
 
         for batch_imgs, batch_labels in loader:
@@ -669,7 +534,7 @@ class XAIEvaluator:
 
             for i in range(len(imgs)):
                 # explain_one bây giờ đã trả về pred_label được tính từ importance scores
-                heat, pred_from_importance = pebex.explain_one_mc(imgs[i].to(device))
+                heat, pred_from_importance = ipem.explain(imgs[i].to(device))
                 
                 all_expl_vecs.append(vectorize_explanation(np.abs(heat)))
                 all_used_feats.append(np.count_nonzero(np.abs(heat) > 1e-6))
@@ -693,8 +558,8 @@ class XAIEvaluator:
                             masked_img = img_tensor * mask_t
                             masked_out = self.model(masked_img)
                             masked_prob = torch.softmax(masked_out, dim=1)[0, original_class].item()
-                        pebex_orig_probs.append(float(original_prob[original_class].item()))
-                        pebex_masked_probs.append(float(masked_prob))
+                        IPEM_orig_probs.append(float(original_prob[original_class].item()))
+                        IPEM_masked_probs.append(float(masked_prob))
                     except Exception:
                         pass
 
@@ -708,50 +573,36 @@ class XAIEvaluator:
                         verbose=False
                     )
                     all_aopc_scores.append(mean_AOPC)
-                    # insertion/deletion
-                    try:
-                        ins = self.insertion_deletion_score(imgs[i], heat, original_class, mode="insertion")
-                        de = self.insertion_deletion_score(imgs[i], heat, original_class, mode="deletion")
-                        pebex_ins.append(float(ins))
-                        pebex_del.append(float(de))
-                    except Exception:
-                        pass
-            
+                    
             all_y_local.extend(y_local)
             all_y_model.extend(y_model)
 
         time_end = time.time()
         exp_time = time_end - time_start
 
-        mu_comp, _ = self.comprehensibility(all_used_feats)
+        # mu_comp, _ = self.comprehensibility(all_used_feats)
         mu_cons, _ = self.consistency(all_expl_vecs)
 
         results = {
-            "PEBEX_Fidelity": self.fidelity(all_y_model, all_y_local),
-            "PEBEX_Comprehensibility": mu_comp,
-            "PEBEX_Consistency": mu_cons,
-            "PEBEX_Stability": self.stability(all_expl_vecs),
-            "PEBEX_Robustness": self.robustness(all_expl_vecs),
-            "PEBEX_Time": exp_time,
+            "IPEM_Fidelity": self.fidelity(all_y_model, all_y_local),
+            "IPEM_Consistency": mu_cons,
+            "IPEM_Stability": self.stability(all_expl_vecs),
+            "IPEM_Robustness": self.robustness(all_expl_vecs),
+            "IPEM_Time": exp_time,
         }
 
         # --- Thêm AOPC nếu có ---
         if compute_aopc and len(all_aopc_scores) > 0:
-            results["PEBEX_AOPC_Mean"] = float(np.mean(all_aopc_scores))
+            results["IPEM_AOPC_Mean"] = float(np.mean(all_aopc_scores))
         # --- Thêm Average Drop/Increase nếu có ---
-        if len(pebex_orig_probs) > 0:
+        if len(IPEM_orig_probs) > 0:
             try:
-                avg_drop, inc_rate = self.average_drop_increase(pebex_orig_probs, pebex_masked_probs)
-                results["PEBEX_AvgDrop"] = float(avg_drop)
-                results["PEBEX_IncreaseRate"] = float(inc_rate)
+                avg_drop, inc_rate = self.average_drop_increase(IPEM_orig_probs, IPEM_masked_probs)
+                results["IPEM_AvgDrop"] = float(avg_drop)
+                results["IPEM_IncreaseRate"] = float(inc_rate)
             except Exception:
                 pass
-        # --- Thêm Insertion/Deletion nếu có ---
-        if len(pebex_ins) > 0:
-            results["PEBEX_Insertion"] = float(np.mean(pebex_ins))
-        if len(pebex_del) > 0:
-            results["PEBEX_Deletion"] = float(np.mean(pebex_del))
-        results.update(self.fcc_score(results["PEBEX_Fidelity"], results["PEBEX_Comprehensibility"], results["PEBEX_Consistency"]))
+        # results.update(self.fcc_score(results["IPEM_Fidelity"], results["IPEM_Comprehensibility"], results["IPEM_Consistency"]))
         return results
 
     def evaluate_with_GradCAM(self, loader, compute_aopc=True, block_size=8, percentile=None):
@@ -830,25 +681,17 @@ class XAIEvaluator:
                         verbose=False
                     )
                     all_aopc_scores.append(mean_AOPC)
-                    # insertion/deletion
-                    try:
-                        ins = self.insertion_deletion_score(imgs[i], heatmap, int(y_model[i]), mode="insertion")
-                        de = self.insertion_deletion_score(imgs[i], heatmap, int(y_model[i]), mode="deletion")
-                        gradcam_ins.append(float(ins))
-                        gradcam_del.append(float(de))
-                    except Exception:
-                        pass
-            
+                    
             all_y_model.extend(y_model)
 
         time_end = time.time()
 
-        mu_comp, _ = self.comprehensibility(all_used_feats)
+        # mu_comp, _ = self.comprehensibility(all_used_feats)
         mu_cons, _ = self.consistency(all_expl_vecs)
 
         results = {
             "GradCAM_Fidelity": self.fidelity(all_y_model, all_y_local),
-            "GradCAM_Comprehensibility": mu_comp,
+            # "GradCAM_Comprehensibility": mu_comp,
             "GradCAM_Consistency": mu_cons,
             "GradCAM_Stability": self.stability(all_expl_vecs),
             "GradCAM_Robustness": self.robustness(all_expl_vecs),
@@ -866,18 +709,6 @@ class XAIEvaluator:
                 results["GradCAM_IncreaseRate"] = float(inc_rate)
             except Exception:
                 pass
-
-        # --- Thêm Insertion/Deletion nếu có ---
-        if len(gradcam_ins) > 0:
-            results["GradCAM_Insertion"] = float(np.mean(gradcam_ins))
-        if len(gradcam_del) > 0:
-            results["GradCAM_Deletion"] = float(np.mean(gradcam_del))
-
-        results.update(self.fcc_score(
-            results["GradCAM_Fidelity"],
-            results["GradCAM_Comprehensibility"],
-            results["GradCAM_Consistency"]
-        ))
 
         return results
 

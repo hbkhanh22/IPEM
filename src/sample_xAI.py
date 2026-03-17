@@ -5,7 +5,7 @@ from pathlib import Path
 from skimage.transform import resize
 from torchvision import transforms
 from PIL import Image
-from pebex_explainer import PEBEXExplainer
+from ipem_explainer import IPEMExplainer
 from lime import lime_image
 import shap
 import cv2
@@ -188,25 +188,25 @@ def explain_with_shap(clf, img_tensor, class_names, output_dir, args_dataset, or
     )
     return shap_values, heatmap_smooth
 
-def explain_with_pebex(clf, img_tensor, class_names, output_dir, args_dataset, org_img):
-    """Giải thích bằng PEBEX với visualization tương tự SHAP"""
-    print("🔍 Đang chạy PEBEX...")
+def explain_with_ipem(clf, img_tensor, class_names, output_dir, args_dataset, org_img):
+    """Giải thích bằng IPEM với visualization tương tự SHAP"""
+    print("🔍 Đang chạy IPEM...")
     start_time = time.time()
     if output_dir:
         output_dir = f"{output_dir}/{args_dataset}"
-        output_path = Path(output_dir) / "pebex"
+        output_path = Path(output_dir) / "ipem"
         output_path.mkdir(parents=True, exist_ok=True)
 
-    pebex = PEBEXExplainer(clf.model, class_names)
-    heatmap, pred_class = pebex.explain_one_mc(img_tensor.squeeze(0))
+    ipem = IPEMExplainer(clf.model, class_names)
+    heatmap, pred_class = ipem.explain(img_tensor.squeeze(0))
     end_time = time.time()
     explanation_time = end_time - start_time
-    # save_path = output_path / "pebex_explanation.png"
+    # save_path = output_path / "ipem_explanation.png"
     visualize_counterfactual_explanation(
         classifier=clf,
         org_img=org_img,
         heatmap=heatmap,
-        model_name="PeBEx",
+        model_name="IPEM",
         pred_class=predict_with_model(clf.model, img_tensor)[0],
         original_probs=predict_with_model(clf.model, img_tensor)[2],
         output_path=output_path,
@@ -265,11 +265,11 @@ def explain_with_gradcam(clf, img_tensor, class_names, output_dir, args_dataset,
 
 # def visualize_counterfactual_explanation(classifier, org_img, heatmap, model_name, pred_class, original_probs, output_path=None, explanation_time=None, percentile_threshold=50, alpha=0.5, cmap='jet'):
 #     """
-#     Visualize heatmap (PEBEX) giống saliency map overlay lên ảnh gốc.
+#     Visualize heatmap (ipem) giống saliency map overlay lên ảnh gốc.
     
 #     Args:
 #         org_img (PIL.Image or np.ndarray): ảnh gốc
-#         heatmap (np.ndarray): ma trận heatmap từ PEBEX
+#         heatmap (np.ndarray): ma trận heatmap từ ipem
 #         save_path (str, optional): nếu muốn lưu ảnh
 #         alpha (float): độ trong suốt của heatmap
 #         cmap (str): colormap để hiển thị heatmap

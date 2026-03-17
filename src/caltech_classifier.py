@@ -3,7 +3,6 @@ import json
 import os
 import random
 from pathlib import Path
-from typing import List, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -334,12 +333,12 @@ class CaltechImageClassifier:
         print("📊 SHAP metrics:", results)
         return results
 
-    def run_pebex_metrics(self):
-        """Tính metrics cho PEBEX"""
+    def run_ipem_metrics(self):
+        """Tính metrics cho IPEM"""
         evaluator = XAIEvaluator(self.model, self.class_names)
 
-        results = evaluator.evaluate_with_pebex(self.test_loader)
-        print("📊 PEBEX metrics:", results)
+        results = evaluator.evaluate_with_ipem(self.test_loader)
+        print("📊 IPEM metrics:", results)
         return results
 
     def run_gradcam_metrics(self):

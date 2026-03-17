@@ -12,26 +12,39 @@ def parse_args():
     parser.add_argument('--epochs', type=int, default=50)
     parser.add_argument('--batch-size', type=int, default=32)
     parser.add_argument('--img-size', type=int, default=224)
+    parser.add_argument('--mode', type=str, choices=["train", "test", "explain"], default="test")
     return parser.parse_args()
 
 def main():
     args = parse_args()     
     if args.dataset.lower() == 'animals' or args.dataset.lower() == 'animal':
         clf = AnimalImageClassifier(data_dir=args.data_dir, output_dir=args.output_dir, args_model=args.model,
-                          img_size=args.img_size, batch_size=args.batch_size, epochs=args.epochs)
+                          img_size=args.img_size, batch_size=args.batch_size, epochs=args.epochs, mode=args.mode)
     elif args.dataset.lower() == 'caltech-101':
         clf = CaltechImageClassifier(data_dir=args.data_dir, output_dir=args.output_dir, args_model=args.model,
-                          img_size=args.img_size, batch_size=args.batch_size, epochs=args.epochs)
+                          img_size=args.img_size, batch_size=args.batch_size, epochs=args.epochs, mode=args.mode)
     elif args.dataset.lower() == 'brain-tumor':
         clf = BrainTumorClassifier(data_dir=args.data_dir, output_dir=args.output_dir, args_model=args.model,
-                          img_size=args.img_size, batch_size=args.batch_size, epochs=args.epochs)
-    clf.train()
-    clf.test()
-    lime_results = clf.run_lime_metrics()
-    shap_results = clf.run_shap_metrics()
-    pebex_results = clf.run_pebex_metrics()
-    grad_cam_results = clf.run_gradcam_metrics()
+                          img_size=args.img_size, batch_size=args.batch_size, epochs=args.epochs, mode=args.mode)
+    
+    if args.mode == "train":
+        clf.train()
+    elif args.mode == "test":
+        clf.test()
+    elif args.mode == "explain":
+        clf.load_trained_model()
+        clf._build_dataloaders()
 
+        print(f"Choosing your explanation method: \n1. LIME\n2. SHAP\n3. IPEM\n4. GradCAM")
+        method = input("Enter the number of the explanation method: ")
+        if method == "1":
+            clf.run_lime_metrics()
+        elif method == "2":
+            clf.run_shap_metrics()
+        elif method == "3":
+            clf.run_ipem_metrics()
+        elif method == "4":
+            clf.run_gradcam_metrics()
 
 if __name__ == "__main__":
     main()
