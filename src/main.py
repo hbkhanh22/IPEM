@@ -16,16 +16,16 @@ def parse_args():
     return parser.parse_args()
 
 def main():
-    args = parse_args()     
+    args = parse_args()
     if args.dataset.lower() == 'animals' or args.dataset.lower() == 'animal':
         clf = AnimalImageClassifier(data_dir=args.data_dir, output_dir=args.output_dir, args_model=args.model,
-                          img_size=args.img_size, batch_size=args.batch_size, epochs=args.epochs, mode=args.mode)
+                          img_size=args.img_size, batch_size=args.batch_size, epochs=args.epochs)
     elif args.dataset.lower() == 'caltech-101':
         clf = CaltechImageClassifier(data_dir=args.data_dir, output_dir=args.output_dir, args_model=args.model,
-                          img_size=args.img_size, batch_size=args.batch_size, epochs=args.epochs, mode=args.mode)
+                          img_size=args.img_size, batch_size=args.batch_size, epochs=args.epochs)
     elif args.dataset.lower() == 'brain-tumor':
         clf = BrainTumorClassifier(data_dir=args.data_dir, output_dir=args.output_dir, args_model=args.model,
-                          img_size=args.img_size, batch_size=args.batch_size, epochs=args.epochs, mode=args.mode)
+                          img_size=args.img_size, batch_size=args.batch_size, epochs=args.epochs)
     
     if args.mode == "train":
         clf.train()
