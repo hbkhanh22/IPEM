@@ -191,14 +191,15 @@ def explain_with_shap(clf, img_tensor, class_names, output_dir, args_dataset, or
 def explain_with_ipem(clf, img_tensor, class_names, output_dir, args_dataset, org_img):
     """Giải thích bằng IPEM với visualization tương tự SHAP"""
     print("🔍 Đang chạy IPEM...")
-    start_time = time.time()
+    start_time = time.time() 
     if output_dir:
         output_dir = f"{output_dir}/{args_dataset}"
         output_path = Path(output_dir) / "ipem"
         output_path.mkdir(parents=True, exist_ok=True)
 
     ipem = IPEMExplainer(clf.model, class_names)
-    heatmap, pred_class = ipem.explain(img_tensor.squeeze(0))
+    # heatmap, pred_class = ipem.explain(img_tensor.squeeze(0))
+    heatmap, pred_class = ipem.explain_by_slic(img_tensor.squeeze(0))
     end_time = time.time()
     explanation_time = end_time - start_time
     # save_path = output_path / "ipem_explanation.png"

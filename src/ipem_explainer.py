@@ -2,6 +2,8 @@ from typing import List, Tuple
 import numpy as np
 import torch
 import cv2
+from skimage.segmentation import slic
+from skimage.util import img_as_float
 
 class IPEMExplainer:
     def __init__(self, model: torch.nn.Module, class_names: List[str], grid_size: Tuple[int,int]=(4,4), perturb_modes: List[str]=["black", "blur", "mean", "noise"], device=None):
@@ -208,3 +210,125 @@ class IPEMExplainer:
         final_heat = (final_heat - final_heat.min()) / (final_heat.max() - final_heat.min() + 1e-8)
 
         return final_heat, baseline_label
+
+    def explain_by_slic(
+        self,
+        img_tensor: torch.Tensor,
+        n_samples: int = 400,
+        mask_prob: float = 0.5,
+        n_segments: int = 50,
+        compactness: float = 10.0,
+        sigma: float = 1.0,
+        sigma_smooth: float = 6.0,
+    ):
+        """
+        Parameters
+        ----------
+        img_tensor   : torch.Tensor (C, H, W), float, giá trị [0,1]
+        n_samples    : số mẫu Monte Carlo
+        mask_prob    : xác suất một superpixel được GIỮ LẠI (=1)
+        n_segments   : số superpixels mong muốn cho SLIC
+        compactness  : tham số SLIC – cân bằng màu sắc vs khoảng cách không gian
+        sigma        : Gaussian smoothing trước SLIC
+        sigma_smooth : Gaussian blur cho heatmap cuối
+        """
+        self.model.eval()
+        C, H, W = img_tensor.shape
+        img = img_tensor.to(self.device)
+
+        # ------------------------------------------------------------------
+        # 1. Baseline prediction
+        # ------------------------------------------------------------------
+        with torch.no_grad():
+            baseline_logits = self.model(img.unsqueeze(0))
+            baseline_label = baseline_logits.argmax(dim=1).item()
+
+        # ------------------------------------------------------------------
+        # 2. SLIC segmentation
+        # ------------------------------------------------------------------
+        # SLIC cần ảnh HWC float [0,1]
+        img_np = img_tensor.permute(1, 2, 0).cpu().numpy()
+        img_np = np.clip(img_np, 0, 1)
+
+        segments = slic(
+            img_np,
+            n_segments=n_segments,
+            compactness=compactness,
+            sigma=sigma,
+            start_label=0,
+            channel_axis=-1,
+        )
+        # segments: (H, W), giá trị nguyên 0..K-1
+        segment_ids = np.unique(segments)
+        K = len(segment_ids)            # số superpixels thực tế
+
+        # Remap về 0..K-1 liên tục (phòng trường hợp SLIC skip id)
+        remap = {old: new for new, old in enumerate(segment_ids)}
+        segments_remap = np.vectorize(remap.get)(segments)  # (H, W)
+
+        # Tensor segment map để dùng sau
+        seg_t = torch.from_numpy(segments_remap).long().to(self.device)  # (H, W)
+
+        # ------------------------------------------------------------------
+        # 3. Monte Carlo binary masks trên không gian superpixel
+        # ------------------------------------------------------------------
+        # masks_sp: (n_samples, K)  – 1 = superpixel được giữ, 0 = bị xoá
+        masks_sp = (torch.rand(n_samples, K, device=self.device) < mask_prob).float()
+
+        # ------------------------------------------------------------------
+        # 4. Upsample mask từ superpixel → pixel (vectorized)
+        # ------------------------------------------------------------------
+        # seg_t (H*W,) → dùng làm index chọn cột trong masks_sp
+        seg_flat = seg_t.view(-1)                           # (H*W,)
+        masks_px = masks_sp[:, seg_flat]                    # (n_samples, H*W)
+        masks_up = masks_px.view(n_samples, 1, H, W)       # (n_samples, 1, H, W)
+
+        # ------------------------------------------------------------------
+        # 5. Perturb & batch inference
+        # ------------------------------------------------------------------
+        perturbed_imgs = img.unsqueeze(0) * masks_up       # (n_samples, C, H, W)
+
+        with torch.no_grad():
+            preds = self.model(perturbed_imgs)
+            probs = torch.softmax(preds, dim=1)[:, baseline_label]  # (n_samples,)
+
+        # ------------------------------------------------------------------
+        # 6. Monte Carlo importance per superpixel (vectorized)
+        # ------------------------------------------------------------------
+        # probs: (n_samples,) → (n_samples, 1)
+        probs_col = probs.unsqueeze(1)                       # (n_samples, 1)
+
+        on_mask  = masks_sp                                  # (n_samples, K)
+        off_mask = 1.0 - masks_sp
+
+        cnt_on  = on_mask.sum(dim=0)  + 1e-8                # (K,)
+        cnt_off = off_mask.sum(dim=0) + 1e-8
+
+        mean_on  = (probs_col * on_mask ).sum(dim=0) / cnt_on
+        mean_off = (probs_col * off_mask).sum(dim=0) / cnt_off
+
+        var_on  = ((probs_col - mean_on )**2 * on_mask ).sum(dim=0) / cnt_on
+        var_off = ((probs_col - mean_off)**2 * off_mask).sum(dim=0) / cnt_off
+
+        importance_sp = (mean_on - mean_off) / (torch.sqrt(var_on + var_off) + 1e-8)
+
+        # Normalize về [0, 1]
+        imp_min, imp_max = importance_sp.min(), importance_sp.max()
+        importance_sp = (importance_sp - imp_min) / (imp_max - imp_min + 1e-8)
+
+        # ------------------------------------------------------------------
+        # 7. Map importance về không gian ảnh
+        # ------------------------------------------------------------------
+        # Mỗi pixel lấy giá trị importance của superpixel nó thuộc về
+        heatmap_flat = importance_sp[seg_flat]              # (H*W,)
+        heatmap = heatmap_flat.view(H, W).cpu().numpy()    # (H, W)
+
+        # ------------------------------------------------------------------
+        # 8. Smooth & normalize lần cuối
+        # ------------------------------------------------------------------
+        if sigma_smooth > 0:
+            heatmap = cv2.GaussianBlur(heatmap, (0, 0), sigmaX=sigma_smooth)
+
+        heatmap = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
+
+        return heatmap, baseline_label

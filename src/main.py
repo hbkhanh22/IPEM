@@ -38,13 +38,13 @@ def main():
         print(f"Choosing your explanation method: \n1. LIME\n2. SHAP\n3. IPEM\n4. GradCAM")
         method = input("Enter the number of the explanation method: ")
         if method == "1":
-            clf.run_lime_metrics()
+            lime_results = clf.run_lime_metrics()
         elif method == "2":
-            clf.run_shap_metrics()
+            shap_results = clf.run_shap_metrics()
         elif method == "3":
-            clf.run_ipem_metrics()
+            ipem_results = clf.run_ipem_metrics()
         elif method == "4":
-            clf.run_gradcam_metrics()
+            gradcam_results = clf.run_gradcam_metrics()
 
 if __name__ == "__main__":
     main()
