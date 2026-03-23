@@ -2,7 +2,8 @@
 torch>=1.12.0
 torchaudio>=0.12.0
 torchvision>=0.13.0
-numpy
+numpy (Version: 2.4.3)
+
 scipy>=1.7.0
 scikit-learn>=1.1.0
 
@@ -13,7 +14,7 @@ Pillow
 # EXPLAINABLE AI (XAI)
 shap
 lime
-gradcam
+grad-cam
 
 # DATA VISUALIZATION
 matplotlib
