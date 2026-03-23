@@ -13,6 +13,8 @@ from utils import predict_with_model
 import torch.nn as nn
 from pytorch_grad_cam import GradCAM
 from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
+import torch.nn.functional as F
+
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 import time
@@ -198,7 +200,7 @@ def explain_with_ipem(clf, img_tensor, class_names, output_dir, args_dataset, or
         output_path.mkdir(parents=True, exist_ok=True)
 
     ipem = IPEMExplainer(clf.model, class_names)
-    heatmap, pred_class = ipem.explain(img_tensor.squeeze(0))
+    heatmap, pred_class = ipem.explain_by_slic(img_tensor.squeeze(0))
     end_time = time.time()
     explanation_time = end_time - start_time
     # save_path = output_path / "ipem_explanation.png"

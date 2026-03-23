@@ -17,7 +17,7 @@ from torchvision import models, transforms
 from torchvision.datasets import ImageFolder
 from tqdm import tqdm
 
-from xai_metrics import XAIEvaluator
+from xai_metrics_eval import XAIEvaluator
 from PIL import ImageFile
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
