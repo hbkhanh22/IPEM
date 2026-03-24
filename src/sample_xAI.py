@@ -13,6 +13,8 @@ from utils import predict_with_model
 import torch.nn as nn
 from pytorch_grad_cam import GradCAM
 from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
+import torch.nn.functional as F
+
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 import time

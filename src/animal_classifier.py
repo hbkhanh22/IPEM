@@ -3,7 +3,6 @@ import json
 import os
 import random
 from pathlib import Path
-
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -17,7 +16,7 @@ from torchvision import models, transforms
 from torchvision.datasets import ImageFolder
 from tqdm import tqdm
 
-from xai_metrics import XAIEvaluator
+from xai_metrics_eval import XAIEvaluator
 from PIL import ImageFile
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
