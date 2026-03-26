@@ -23,27 +23,6 @@ class IPEMExplainer:
         self.perturb_modes = perturb_modes
         self.device = device
 
-    # def perturb_patch(self, img_np, y1, y2, x1, x2, mode="black_blur"):
-    #     """
-    #     Perturb 1 patch bằng cách:
-    #     - Tắt pixel trong vùng patch
-    #     - Dùng blur để smooth vùng bị mask
-    #     img_np: H x W x 3, float [0,1]
-    #     """
-    #     perturbed = img_np.copy()
-
-    #     # 1. Tắt hoàn toàn patch
-    #     perturbed[y1:y2, x1:x2, :] = 0.0
-
-    #     # 2. Blur toàn ảnh (nhẹ) để smooth biên
-    #     if mode == "black_blur":
-    #         blurred = cv2.GaussianBlur(perturbed, (11, 11), 0)
-
-    #         # 3. Chỉ lấy vùng patch đã blur
-    #         perturbed[y1:y2, x1:x2, :] = blurred[y1:y2, x1:x2, :]
-
-    #     return perturbed
-
     def _predict_from_importance(self, baseline_logits, importance_map):
         """
         Tính predicted_label từ importance scores.
@@ -152,7 +131,8 @@ class IPEMExplainer:
             # ----------------------------------
             # 1. Monte Carlo masks (vectorized)
             # ----------------------------------
-            masks = torch.rand(n_samples, gh, gw, device=self.device) < mask_prob
+            # masks = torch.rand(n_samples, gh, gw, device=self.device) < mask_prob
+            masks = torch.rand(n_samples, gh, gw, device=self.device) < 0.5
             masks = masks.float()
 
             # Upsample mask to image size
@@ -173,6 +153,7 @@ class IPEMExplainer:
             with torch.no_grad():
                 preds = self.model(perturbed_imgs)
                 probs = torch.softmax(preds, dim=1)[:, baseline_label]
+                # probs = preds[:, baseline_label]
 
             # ----------------------------------
             # 4. Vectorized Monte Carlo stats
@@ -217,7 +198,7 @@ class IPEMExplainer:
         n_samples: int = 400,
         mask_prob: float = 0.5,
         sigma_smooth: float = 6.0,
-        n_segments_list: list=(40, 80, 120, 180),
+        n_segments_list: list=(80, 120),
         compactness: float = 10.0,
         slic_sigma: float = 1.0,
         batch_size: int = 64

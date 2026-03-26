@@ -6,6 +6,8 @@ from skimage.transform import resize
 from torchvision import transforms
 from PIL import Image
 from ipem_explainer import IPEMExplainer
+from ipem_improved import IPEMImprovedExplainer
+from rise_explainer import RISE
 from lime import lime_image
 import shap
 import cv2
@@ -200,7 +202,6 @@ def explain_with_ipem(clf, img_tensor, class_names, output_dir, args_dataset, or
         output_path.mkdir(parents=True, exist_ok=True)
 
     ipem = IPEMExplainer(clf.model, class_names)
-    # heatmap, pred_class = ipem.explain(img_tensor.squeeze(0))
     heatmap, pred_class = ipem.explain_by_slic(img_tensor.squeeze(0))
     end_time = time.time()
     explanation_time = end_time - start_time
@@ -265,89 +266,36 @@ def explain_with_gradcam(clf, img_tensor, class_names, output_dir, args_dataset,
 
     return heatmap
 
-
-# def visualize_counterfactual_explanation(classifier, org_img, heatmap, model_name, pred_class, original_probs, output_path=None, explanation_time=None, percentile_threshold=50, alpha=0.5, cmap='jet'):
-#     """
-#     Visualize heatmap (ipem) giống saliency map overlay lên ảnh gốc.
+def explain_with_rise(clf, img_tensor, class_names, output_dir, args_dataset, org_img):
+    start_time = time.time()
+    print("🔍 Đang chạy RISE...")
+    if output_dir:
+        output_dir = f"{output_dir}/{args_dataset}"
+        output_path = Path(output_dir) / "RISE"
+        output_path.mkdir(parents=True, exist_ok=True)
     
-#     Args:
-#         org_img (PIL.Image or np.ndarray): ảnh gốc
-#         heatmap (np.ndarray): ma trận heatmap từ ipem
-#         save_path (str, optional): nếu muốn lưu ảnh
-#         alpha (float): độ trong suốt của heatmap
-#         cmap (str): colormap để hiển thị heatmap
-#     """
-
-#     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-#     # Chuyển ảnh về numpy
-#     if not isinstance(org_img, np.ndarray):
-#         org_img = np.array(org_img)
+    rise_explainer = RISE(model=clf.model, n_masks=500, p=0.5, input_size=(224, 224), initial_mask_size=(7,7), n_batch=128, mask_path=None)
+    heatmap_tensor = rise_explainer.explain(img_tensor)
     
-#     renormalized_heatmap = renormalize_image(heatmap)
-#     cv2.imwrite(f"{output_path}/{model_name}_mask.png", renormalized_heatmap)
-
-#     H, W = org_img.shape[:2]
-
-#     # Resize heatmap để match với ảnh gốc
-#     if model_name == "LIME":
-#         heatmap_norm = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min())
-#         mask = resize(heatmap_norm, (H, W), preserve_range=True).astype(np.uint8)
-
-#     else:
-#         heatmap_norm = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min())
-#         # thresh_val = np.percentile(heatmap_norm, 80)
-#         # mean_val = np.mean(heatmap_norm)
-#         mask = (heatmap_norm >= 0.8).astype(np.uint8)
-#         # mask = heatmap_norm.astype(np.uint8)
-
-#     # blurred = cv2.GaussianBlur(org_img, (11, 11), sigmaX=50, sigmaY=50)
-
-#     mask_3d = np.repeat(mask[:, :, np.newaxis], 3, axis=2)
-#     perturbed_img = org_img.copy()
-#     # noise = np.random.uniform(0, 255, org_img.shape).astype(np.float32)
-
-#     # perturbed_img[mask_3d == 1] = noise[mask_3d == 1]
-#     # perturbed_img[mask_3d == 1] = blurred[mask_3d == 1]
-#     perturbed_img[mask_3d == 1] = 0
-#     # 5. Chuẩn bị input cho model
-#     perturbed_tensor = torch.from_numpy(perturbed_img.transpose(2,0,1)).unsqueeze(0).float().to(device)
-#     perturbed_tensor = perturbed_tensor / 255.0
- 
-#     classifier.model.eval()
-#     with torch.no_grad():
-#         outputs = classifier.model(perturbed_tensor)
-#         new_class = torch.argmax(outputs, dim=1).item()
-
-#     fig, ax = plt.subplots(1, 2, figsize=(10, 6))
-
-#     # Ảnh gốc
-#     ax[0].imshow(org_img)
-#     ax[0].set_title("Original Image")
-#     ax[0].axis("off")
-
-#     # Overlay saliency map
-#     ax[1].imshow(org_img, alpha=1.0)
-#     hm = ax[1].imshow(heatmap, cmap=cmap, alpha=alpha)
-#     ax[1].set_title(f"{model_name} Explanation Map - Pred: {classifier.class_names[pred_class]}\n"
-#                     f"Probability: {original_probs[pred_class]:.2f} - Explanation time: {explanation_time:.2f}s")
-#     ax[1].axis("off")
-#     fig.colorbar(hm, ax=ax[1], fraction=0.046, pad=0.04)
-
-#     # ax[2].imshow(perturbed_img, alpha=1.0)
-#     # ax[2].set_title(f"Perturbed Image - Pred: {classifier.class_names[new_class]}\n"
-#     #                 f"Probability of {classifier.class_names[pred_class]} class: {torch.softmax(outputs, dim=1)[0][pred_class]:.2f}")
-#     # ax[2].axis("off")
-
-#     # Căn chỉnh layout để 3 ảnh bằng nhau
-#     plt.subplots_adjust(wspace=0.05, hspace=0)
-#     plt.tight_layout()
-
-#     if output_path:
-#         plt.savefig(f"{output_path}/{model_name}_explanation.png", dpi=200, bbox_inches="tight")
-
-#     plt.show()
-#     plt.close(fig)
+    # Lấy thông tin dự đoán để chọn đúng heatmap của class đó
+    pred_class, _, original_probs = predict_with_model(clf.model, img_tensor)
+    
+    # Chuyển đổi tensor sang NumPy array kích thước (H, W)
+    heatmap = heatmap_tensor[pred_class].cpu().numpy()
+    
+    end_time = time.time()
+    explantion_time = end_time - start_time
+    visualize_counterfactual_explanation(
+        classifier=clf,
+        org_img=org_img,
+        heatmap=heatmap,
+        model_name="RISE",
+        pred_class=pred_class,
+        original_probs=original_probs,
+        output_path=output_path,
+        explanation_time=explantion_time
+    )
+    return heatmap
 
 def visualize_counterfactual_explanation(classifier, org_img, heatmap, model_name, pred_class, original_probs, output_path=None, explanation_time=None, percentile_threshold=50, alpha=0.5, cmap='jet'):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -426,28 +374,28 @@ def visualize_counterfactual_explanation(classifier, org_img, heatmap, model_nam
     plt.show()
     plt.close(fig)
 
-def make_perturbation(img, mode='blur', ksize=(11, 11), sigma=50):
-    """
-    Tạo nhiễu ảnh bằng các phương pháp khác nhau
-    """
-    if mode == 'blur':
-        # Kiểm tra để đảm bảo kernel không lớn hơn block
-        k_h = min(ksize[0], img.shape[0] | 1)  # |1 để đảm bảo lẻ
-        k_w = min(ksize[1], img.shape[1] | 1)
+# def make_perturbation(img, mode='blur', ksize=(11, 11), sigma=50):
+#     """
+#     Tạo nhiễu ảnh bằng các phương pháp khác nhau
+#     """
+#     if mode == 'blur':
+#         # Kiểm tra để đảm bảo kernel không lớn hơn block
+#         k_h = min(ksize[0], img.shape[0] | 1)  # |1 để đảm bảo lẻ
+#         k_w = min(ksize[1], img.shape[1] | 1)
 
-        # Áp dụng Gaussian blur
-        blurred = cv2.GaussianBlur(img, (k_w, k_h), sigma)
+#         # Áp dụng Gaussian blur
+#         blurred = cv2.GaussianBlur(img, (k_w, k_h), sigma)
 
-        return blurred
-    elif mode == 'noise':
-        noise = np.random.normal(0, 0.1, img.shape)
-        return np.clip(img + noise, 0, 1)
-    elif mode == "zero":
-        return np.zeros_like(img)
-    elif mode == "mean":
-        return np.full_like(img, np.mean(img))
-    else:
-        return img
+#         return blurred
+#     elif mode == 'noise':
+#         noise = np.random.normal(0, 0.1, img.shape)
+#         return np.clip(img + noise, 0, 1)
+#     elif mode == "zero":
+#         return np.zeros_like(img)
+#     elif mode == "mean":
+#         return np.full_like(img, np.mean(img))
+#     else:
+#         return img
 
 def AOPC_MoRF(clf, img_map_path, img_path, mode='blur', block_size=8, block_per_row=28, percentile=None, img_size=224, verbose=False):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
