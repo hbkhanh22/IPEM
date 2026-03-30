@@ -7,13 +7,14 @@ import torch.nn.functional as F
 # Reference: https://github.com/yiskw713/RISE/blob/master/rise.py
 
 class RISE(nn.Module):
-    def __init__(self, model, n_masks=100, p=0.5, input_size=(224, 224), initial_mask_size=(7,7), mask_path=None):
+    def __init__(self, model, n_masks=100, p=0.5, input_size=(224, 224), initial_mask_size=(7,7), n_batch=64, mask_path=None):
         super().__init__()
         self.model = model
         self.n_masks = n_masks
         self.p = p
         self.input_size = input_size
         self.initial_mask_size = initial_mask_size
+        self.n_batch = n_batch
         if mask_path is None:
             self.masks = self._generate_masks()
         else:

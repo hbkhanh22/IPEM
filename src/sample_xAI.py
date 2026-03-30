@@ -318,7 +318,7 @@ def explain_with_rise(clf, img_tensor, class_names, output_dir, args_dataset, or
         output_path = Path(output_dir) / "RISE"
         output_path.mkdir(parents=True, exist_ok=True)
     
-    rise_explainer = RISE(model=clf.model, n_masks=128, p=0.5, input_size=(224, 224), initial_mask_size=(11,11), n_batch=64, mask_path=None)
+    rise_explainer = RISE(model=clf.model, n_masks=1000, p=0.5, input_size=(224, 224), initial_mask_size=(11,11), n_batch=64, mask_path=None)
     heatmap_tensor = rise_explainer.explain(img_tensor)
     
     # Lấy thông tin dự đoán để chọn đúng heatmap của class đó
@@ -556,7 +556,7 @@ def explain_all_parallel(clf, img_tensor, img_np, org_img, class_names, output_d
             # executor.submit(explain_with_shap, clf, img_tensor, class_names, output_dir, args_dataset, org_img): "SHAP",
             executor.submit(explain_with_ipem, clf, img_tensor, class_names, output_dir, args_dataset, org_img): "IPEM",
             executor.submit(explain_with_gradcam, clf, img_tensor, class_names, output_dir, args_dataset, org_img): "GradCAM",
-            executor.submit(explain_with_shapcam, clf, img_tensor, class_names, output_dir, args_dataset, org_img): "ShapleyCAM",
+            # executor.submit(explain_with_shapcam, clf, img_tensor, class_names, output_dir, args_dataset, org_img): "ShapleyCAM",
             executor.submit(explain_with_rise, clf, img_tensor, class_names, output_dir, args_dataset, org_img): "RISE"
         }
         

@@ -87,7 +87,7 @@ class IPEMExplainer:
         n_samples: int = 400,
         mask_prob: float = 0.5,
         sigma_smooth: float = 0.5,
-        grid_sizes: list = [(8, 8), (4, 4)]
+        grid_sizes: list = [(8, 8)]
     ):
         self.model.eval()
         C, H, W = img_tensor.shape
