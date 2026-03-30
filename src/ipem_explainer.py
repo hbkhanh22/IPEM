@@ -170,7 +170,7 @@ class IPEMExplainer:
         n_samples: int = 400,
         mask_prob: float = 0.5,
         sigma_smooth: float = 6.0,
-        n_segments_list: list=(80, 120),
+        n_segments_list: list=[80, 120],
         compactness: float = 10.0,
         slic_sigma: float = 1.0,
         batch_size: int = 64
