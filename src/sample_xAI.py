@@ -16,10 +16,9 @@ import torch.nn as nn
 from pytorch_grad_cam import GradCAM
 from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 import torch.nn.functional as F
-
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def renormalize_image(img):
     if img is None:
@@ -202,7 +201,7 @@ def explain_with_ipem(clf, img_tensor, class_names, output_dir, args_dataset, or
         output_path.mkdir(parents=True, exist_ok=True)
 
     ipem = IPEMExplainer(clf.model, class_names)
-    heatmap, pred_class = ipem.explain_by_slic(img_tensor.squeeze(0))
+    heatmap, pred_class = ipem.explain(img_tensor.squeeze(0))
     end_time = time.time()
     explanation_time = end_time - start_time
     # save_path = output_path / "ipem_explanation.png"
@@ -266,6 +265,50 @@ def explain_with_gradcam(clf, img_tensor, class_names, output_dir, args_dataset,
 
     return heatmap
 
+def explain_with_shapcam(clf, img_tensor, class_names, output_dir, args_dataset, org_img):
+    start_time = time.time()
+    print("🔍 Đang chạy ShapleyCAM...")
+    if output_dir:
+        output_dir = f"{output_dir}/{args_dataset}"
+        output_path = Path(output_dir) / "ShapleyCAM"
+        output_path.mkdir(parents=True, exist_ok=True)
+    
+    def get_last_conv_layer(model):
+        last_conv = None
+        for name, module in model.named_modules():
+            if isinstance(module, nn.Conv2d):
+                last_conv = module
+        if last_conv is None:
+            raise ValueError("❌ Không tìm thấy Conv2D nào trong model. ShapleyCAM yêu cầu CNN.")
+        return last_conv
+
+    target_layer = get_last_conv_layer(clf.model)
+    
+    from pytorch_grad_cam.shapley_cam import ShapleyCAM
+    cam = ShapleyCAM(model=clf.model, target_layers=[target_layer])
+
+    img_tensor = img_tensor.to(device)
+    with torch.no_grad():
+        logits = clf.model(img_tensor)
+        y_model = logits.argmax(1).cpu().numpy()[0]
+
+    target = [ClassifierOutputTarget(y_model)]
+    heatmap = cam(input_tensor=img_tensor, targets=target)[0]
+    end_time = time.time()
+    explanation_time = end_time - start_time
+    visualize_counterfactual_explanation(
+        classifier=clf,
+        org_img=org_img,
+        heatmap=heatmap,
+        model_name="ShapleyCAM",
+        pred_class=predict_with_model(clf.model, img_tensor)[0],
+        original_probs=predict_with_model(clf.model, img_tensor)[2],
+        output_path=output_path,
+        explanation_time=explanation_time
+    )
+
+    return heatmap
+
 def explain_with_rise(clf, img_tensor, class_names, output_dir, args_dataset, org_img):
     start_time = time.time()
     print("🔍 Đang chạy RISE...")
@@ -274,7 +317,7 @@ def explain_with_rise(clf, img_tensor, class_names, output_dir, args_dataset, or
         output_path = Path(output_dir) / "RISE"
         output_path.mkdir(parents=True, exist_ok=True)
     
-    rise_explainer = RISE(model=clf.model, n_masks=500, p=0.5, input_size=(224, 224), initial_mask_size=(7,7), n_batch=128, mask_path=None)
+    rise_explainer = RISE(model=clf.model, n_masks=128, p=0.5, input_size=(224, 224), initial_mask_size=(11,11), n_batch=64, mask_path=None)
     heatmap_tensor = rise_explainer.explain(img_tensor)
     
     # Lấy thông tin dự đoán để chọn đúng heatmap của class đó
@@ -374,28 +417,28 @@ def visualize_counterfactual_explanation(classifier, org_img, heatmap, model_nam
     plt.show()
     plt.close(fig)
 
-# def make_perturbation(img, mode='blur', ksize=(11, 11), sigma=50):
-#     """
-#     Tạo nhiễu ảnh bằng các phương pháp khác nhau
-#     """
-#     if mode == 'blur':
-#         # Kiểm tra để đảm bảo kernel không lớn hơn block
-#         k_h = min(ksize[0], img.shape[0] | 1)  # |1 để đảm bảo lẻ
-#         k_w = min(ksize[1], img.shape[1] | 1)
+def make_perturbation(img, mode='blur', ksize=(11, 11), sigma=50):
+    """
+    Tạo nhiễu ảnh bằng các phương pháp khác nhau
+    """
+    if mode == 'blur':
+        # Kiểm tra để đảm bảo kernel không lớn hơn block
+        k_h = min(ksize[0], img.shape[0] | 1)  # |1 để đảm bảo lẻ
+        k_w = min(ksize[1], img.shape[1] | 1)
 
-#         # Áp dụng Gaussian blur
-#         blurred = cv2.GaussianBlur(img, (k_w, k_h), sigma)
+        # Áp dụng Gaussian blur
+        blurred = cv2.GaussianBlur(img, (k_w, k_h), sigma)
 
-#         return blurred
-#     elif mode == 'noise':
-#         noise = np.random.normal(0, 0.1, img.shape)
-#         return np.clip(img + noise, 0, 1)
-#     elif mode == "zero":
-#         return np.zeros_like(img)
-#     elif mode == "mean":
-#         return np.full_like(img, np.mean(img))
-#     else:
-#         return img
+        return blurred
+    elif mode == 'noise':
+        noise = np.random.normal(0, 0.1, img.shape)
+        return np.clip(img + noise, 0, 1)
+    elif mode == "zero":
+        return np.zeros_like(img)
+    elif mode == "mean":
+        return np.full_like(img, np.mean(img))
+    else:
+        return img
 
 def AOPC_MoRF(clf, img_map_path, img_path, mode='blur', block_size=8, block_per_row=28, percentile=None, img_size=224, verbose=False):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -490,3 +533,43 @@ def AOPC_MoRF(clf, img_map_path, img_path, mode='blur', block_size=8, block_per_
 
     total_AOPC = (class_origin.item(), AOPC, np.sum(AOPC)/count_blocks)
     return total_AOPC
+
+def explain_all_parallel(clf, img_tensor, img_np, org_img, class_names, output_dir, args_dataset):
+    """
+    Chạy tất cả các phương pháp giải thích (LIME, SHAP, IPEM, GradCAM, RISE) 
+    song song trên cùng một bức ảnh bằng ThreadPoolExecutor.
+    Trả về bộ dict chứa kết quả gốc của từng phương pháp.
+    """
+    import time
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    
+    print(f"🚀 Bắt đầu giải thích song song cho 1 ảnh (Shape: {img_tensor.shape})")
+    start_time = time.time()
+    
+    results = {}
+    
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        # Submit tất cả các tasks vào pool
+        future_to_method = {
+            executor.submit(explain_with_lime, clf, img_np, class_names, output_dir, args_dataset, org_img): "LIME",
+            # executor.submit(explain_with_shap, clf, img_tensor, class_names, output_dir, args_dataset, org_img): "SHAP",
+            executor.submit(explain_with_ipem, clf, img_tensor, class_names, output_dir, args_dataset, org_img): "IPEM",
+            executor.submit(explain_with_gradcam, clf, img_tensor, class_names, output_dir, args_dataset, org_img): "GradCAM",
+            executor.submit(explain_with_shapcam, clf, img_tensor, class_names, output_dir, args_dataset, org_img): "ShapleyCAM",
+            executor.submit(explain_with_rise, clf, img_tensor, class_names, output_dir, args_dataset, org_img): "RISE"
+        }
+        
+        # Đợi các task hoàn thành
+        for future in as_completed(future_to_method):
+            method = future_to_method[future]
+            try:
+                # Lưu kết quả thật trả về từ mỗi explainer
+                results[method] = future.result()
+                print(f"✅ {method} đã xử lý xong.")
+            except Exception as exc:
+                results[method] = None # Gán None nếu lỗi để tránh crash code notebook
+                print(f"❌ {method} gặp lỗi: {exc}")
+                
+    end_time = time.time()
+    print(f"⏱️ Tổng thời gian chạy song song: {end_time - start_time:.2f}s")
+    return results

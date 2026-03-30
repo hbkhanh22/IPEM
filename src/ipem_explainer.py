@@ -80,34 +80,6 @@ class IPEMExplainer:
         predicted_label = np.argmax(adjusted_probs)
         
         return predicted_label
-
-    # def _generate_masks(self, n_superpixels, segments, n_samples, H, W, mask_prob=0.5):
-    #     """
-    #     Tạo các tổ hợp mask ngẫu nhiên
-    #     """
-    #     masks = []
-    #     H_up = int(H * 1.5)
-    #     W_up = int(W * 1.5)
-        
-    #     segments_up = cv2.resize(segments.astype(np.float32), (W_up, H_up), 
-    #                         interpolation=cv2.INTER_NEAREST).astype(np.int32)
-
-    #     for _ in range(n_samples):
-    #         fragment_mask = np.random.binomial(1, mask_prob, n_superpixels)
-    #         mask_up = np.zeros((H_up, W_up), dtype=np.float32)
-
-    #         for seg_id in range(n_superpixels):
-    #             if fragment_mask[seg_id] == 1:
-    #                 mask_up[segments_up == seg_id] = 1.0
-
-    #         y_start = np.random.randint(0, H_up - H + 1)
-    #         x_start = np.random.randint(0, W_up - W + 1)
-    #         mask = mask_up[y_start:y_start+H, x_start:x_start+W]
-
-    #         # mask = cv2.GaussianBlur(mask, (11, 11), 5)
-    #         masks.append(mask)
-
-    #     return masks
     
     def explain(
         self,
