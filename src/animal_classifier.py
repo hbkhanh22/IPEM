@@ -11,7 +11,7 @@ import torch.optim as optim
 from sklearn.metrics import classification_report, confusion_matrix, accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
 from imblearn.metrics import specificity_score
 from sklearn.utils.class_weight import compute_class_weight
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, Subset, random_split
 from torchvision import models, transforms
 from torchvision.datasets import ImageFolder
 from tqdm import tqdm
@@ -31,7 +31,8 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 class AnimalImageClassifier:
     def __init__(self, data_dir: str, args_model: str = "efficientnet_b3", output_dir: str = "outputs", img_size: int = 224,
                  batch_size: int = 32, epochs: int = 10, lr: float = 1e-4, weight_decay: float = 1e-4,
-                 val_split: float = 0.15, test_split: float = 0.15, patience: int = 10, num_workers: int = 4):
+                 val_split: float = 0.15, test_split: float = 0.15, patience: int = 10, num_workers: int = 4,
+                 test_loader_fraction: float = 1.0):
         self.data_dir = data_dir
         self.output_dir = Path(output_dir) / "animals"
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -44,12 +45,23 @@ class AnimalImageClassifier:
         self.test_split = test_split
         self.patience = patience
         self.num_workers = num_workers
+        self.test_loader_fraction = test_loader_fraction
         self.class_names = []
         self.model = None
         self.train_loader = None
         self.val_loader = None
         self.test_loader = None
         self.args_model_name = args_model.lower()
+
+    def _reduce_test_dataset(self, test_ds):
+        fraction = min(max(self.test_loader_fraction, 0.0), 1.0)
+        if fraction >= 1.0 or len(test_ds) == 0:
+            return test_ds
+
+        subset_size = max(1, int(len(test_ds) * fraction))
+        generator = torch.Generator().manual_seed(SEED)
+        indices = torch.randperm(len(test_ds), generator=generator)[:subset_size].tolist()
+        return Subset(test_ds, indices)
 
     def _build_dataloaders(self):
         train_tf = transforms.Compose([
@@ -75,6 +87,7 @@ class AnimalImageClassifier:
         train_ds, val_ds, test_ds = random_split(full_ds, [n_train, n_val, n_test], generator=torch.Generator().manual_seed(SEED))
         val_ds.dataset.transform = eval_tf
         test_ds.dataset.transform = eval_tf
+        test_ds = self._reduce_test_dataset(test_ds)
         workers = 0 if os.name == 'nt' else self.num_workers
         pin = (device.type == 'cuda')
         self.train_loader = DataLoader(train_ds, batch_size=self.batch_size, shuffle=True, num_workers=workers, pin_memory=pin)
@@ -345,4 +358,11 @@ class AnimalImageClassifier:
         evaluator = XAIEvaluator(self.model, self.class_names)
         results = evaluator.evaluate_with_GradCAM(self.test_loader)
         print("📊 GradCAM metrics:", results)
+        return results
+
+    def run_rise_metrics(self):
+        """ Tính metrics cho RISE """
+        evaluator = XAIEvaluator(self.model, self.class_names)
+        results = evaluator.evaluate_with_rise(self.test_loader)
+        print("📊 RISE metrics:", results)
         return results

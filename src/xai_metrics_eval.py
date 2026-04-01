@@ -4,6 +4,7 @@ from typing import List
 from lime import lime_image
 import shap
 from ipem_explainer import IPEMExplainer  
+from rise_explainer import RISE
 from sklearn.metrics import accuracy_score
 import time
 import cv2
@@ -18,6 +19,16 @@ class XAIEvaluator:
     def __init__(self, model: torch.nn.Module, class_names: List[str]):
         self.model = model.eval()   
         self.class_names = class_names
+
+    @staticmethod
+    def _synchronize_device(device: torch.device):
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+        elif device.type == "mps" and hasattr(torch, "mps"):
+            try:
+                torch.mps.synchronize()
+            except Exception:
+                pass
 
     # =====================================================================
     # --------- CÁC ĐỘ ĐO ĐÁNH GIÁ CHUNG (ĐÃ CHỈNH SỬA & BỔ SUNG) ---------
@@ -213,12 +224,14 @@ class XAIEvaluator:
         orig_probs_list, masked_probs_list = [], []
         all_gini = []
         all_insertion, all_deletion = [], []
+        explanation_times = []
         
-        time_start = time.time()
         for idx, (img_t, label) in enumerate(samples):
             if img_t.dim() == 2: img_t = img_t.unsqueeze(0)
             img_np = img_t.permute(1,2,0).cpu().numpy()
 
+            self._synchronize_device(device)
+            explanation_start = time.perf_counter()
             explanation = explainer.explain_instance(
                 img_np,
                 classifier_fn=lambda ims: predict_proba_fn(self.model, ims),
@@ -228,6 +241,8 @@ class XAIEvaluator:
             )
             top_label = np.argmax(predict_proba_fn(self.model, np.array([img_np]))[0])
             temp, mask = explanation.get_image_and_mask(label=top_label, positive_only=True, num_features=8, hide_rest=False)
+            self._synchronize_device(device)
+            explanation_times.append(time.perf_counter() - explanation_start)
 
             # Sparsity / LIME_Gini
             all_gini.append(self.gini_sparsity(mask))
@@ -258,8 +273,6 @@ class XAIEvaluator:
                     original_prob=original_prob, block_size=block_size, percentile=percentile, verbose=False
                 )
                 all_aopc_scores.append(mean_AOPC)
-            
-        time_end = time.time()
         
         # [MỚI] Local Stability - Chọn ngẫu nhiên 1 ảnh (tránh mất nhiều 1000 iter của LIME)
         stability_val = 0.0
@@ -288,7 +301,7 @@ class XAIEvaluator:
             stability_val = float(np.linalg.norm(vec_orig - vec_noisy))
 
         results = {
-            "LIME_Time": float(time_end - time_start),
+            "LIME_Time": float(np.mean(explanation_times)) if explanation_times else 0.0,
             "LIME_Gini_Sparsity": float(np.mean(all_gini)) if len(all_gini)>0 else 0.0,
             "LIME_Insertion_AUC": float(np.mean(all_insertion)) if len(all_insertion)>0 else 0.0,
             "LIME_Deletion_AUC": float(np.mean(all_deletion)) if len(all_deletion)>0 else 0.0,
@@ -313,9 +326,12 @@ class XAIEvaluator:
         N = imgs.shape[0]
 
         bg = imgs[:2].to(device)
-        time_start = time.time()
         explainer = shap.GradientExplainer(self.model, batch_size=batch_size, data=bg)
+        self._synchronize_device(device)
+        explanation_start = time.perf_counter()
         raw_shap = explainer.shap_values(imgs)
+        self._synchronize_device(device)
+        avg_explanation_time = (time.perf_counter() - explanation_start) / max(N, 1)
         
         def to_shap_per_class_array(svalues):
             if isinstance(svalues, list): return np.stack([sv.detach().cpu().numpy() if torch.is_tensor(sv) else sv for sv in svalues], axis=0)
@@ -408,11 +424,9 @@ class XAIEvaluator:
 
                 _, _, mean_AOPC = self._compute_single_aopc(img_tensor, heat, orig_class, torch.tensor(y_model_probs[i], device=device), block_size=block_size, percentile=percentile)
                 all_aopc_scores.append(mean_AOPC)
-        
-        time_end = time.time()
 
         results = {
-            "SHAP_Time": time_end - time_start,
+            "SHAP_Time": float(avg_explanation_time),
             "SHAP_Fidelity_Accuracy": float(accuracy_score(y_model, y_local)),
             "SHAP_Gini_Sparsity": float(np.mean(all_gini)) if all_gini else 0.0,
             "SHAP_Insertion_AUC": float(np.mean(all_insertion)) if all_insertion else 0.0,
@@ -438,15 +452,19 @@ class XAIEvaluator:
         all_stability = []
         all_aopc_scores = []  
         IPEM_orig_probs, IPEM_masked_probs = [], []
+        explanation_times = []
         
-        time_start = time.time()
         for batch_imgs, batch_labels in loader:
             imgs = batch_imgs.to(device)
             y_model = self.model(imgs).argmax(1).cpu().numpy()
 
             for i in range(len(imgs)):
                 img_t = imgs[i]
+                self._synchronize_device(device)
+                explanation_start = time.perf_counter()
                 heat, pred_from_importance = ipem.explain(img_t.to(device))
+                self._synchronize_device(device)
+                explanation_times.append(time.perf_counter() - explanation_start)
                 heat_abs = np.abs(heat)
                 
                 # Gini Sparsity
@@ -481,11 +499,9 @@ class XAIEvaluator:
                     except Exception: pass
                     _, _, mean_AOPC = self._compute_single_aopc(img_tensor.squeeze(0), heat_abs, original_class, original_prob, block_size, percentile, False)
                     all_aopc_scores.append(mean_AOPC)
-
-        time_end = time.time()
         
         results = {
-            "IPEM_Time": time_end - time_start,
+            "IPEM_Time": float(np.mean(explanation_times)) if explanation_times else 0.0,
             "IPEM_Gini_Sparsity": float(np.mean(all_gini)) if all_gini else 0.0,
             "IPEM_Insertion_AUC": float(np.mean(all_insertion)) if all_insertion else 0.0,
             "IPEM_Deletion_AUC": float(np.mean(all_deletion)) if all_deletion else 0.0,
@@ -517,8 +533,8 @@ class XAIEvaluator:
         all_stability = []
         all_aopc_scores = []
         gradcam_orig_probs, gradcam_masked_probs = [], []
+        explanation_times = []
 
-        time_start = time.time()
         for imgs, labels in loader:
             imgs = imgs.to(device)
 
@@ -529,7 +545,11 @@ class XAIEvaluator:
             for i in range(len(imgs)):
                 img = imgs[i].unsqueeze(0)
                 target = [ClassifierOutputTarget(y_model[i])]
+                self._synchronize_device(device)
+                explanation_start = time.perf_counter()
                 heatmap = cam(input_tensor=img, targets=target)[0]
+                self._synchronize_device(device)
+                explanation_times.append(time.perf_counter() - explanation_start)
 
                 # Gini Sparsity
                 all_gini.append(self.gini_sparsity(heatmap))
@@ -561,11 +581,9 @@ class XAIEvaluator:
                     except Exception: pass
                     _, _, mean_AOPC = self._compute_single_aopc(imgs[i], heatmap, int(y_model[i]), original_prob, block_size, percentile, False)
                     all_aopc_scores.append(mean_AOPC)
-
-        time_end = time.time()
         
         results = {
-            "GradCAM_Time": time_end - time_start,
+            "GradCAM_Time": float(np.mean(explanation_times)) if explanation_times else 0.0,
             "GradCAM_Gini_Sparsity": float(np.mean(all_gini)) if all_gini else 0.0,
             "GradCAM_Insertion_AUC": float(np.mean(all_insertion)) if all_insertion else 0.0,
             "GradCAM_Deletion_AUC": float(np.mean(all_deletion)) if all_deletion else 0.0,
@@ -579,3 +597,75 @@ class XAIEvaluator:
                 results["GradCAM_IncreaseRate"] = float(inc_rate)
             except Exception: pass
         return results
+
+    def evaluate_with_rise(self, loader, compute_aopc=True, block_size=8, percentile=None, noise_sigma=0.02):
+        rise_explainer = RISE(
+            mode=self.model,
+            n_masks=1000,
+            p=0.5,
+            initial_mask_size=(11, 11),
+        )
+        device = next(self.model.parameters()).device
+        all_gini, all_insertion, all_deletion = [], [], []
+        all_stability = []
+        all_aopc_scores = []
+        rise_orig_probs, rise_masked_probs = [], []
+        explanation_times = []
+
+        for batch_imgs, batch_labels in loader:
+            imgs = batch_imgs.to(device)
+            y_model = self.model(imgs).argmax(1).cpu().numpy()
+
+            for i in range(len(imgs)):
+                img_tensor = imgs[i].unsqueeze(0)
+                self._synchronize_device(device)
+                explanation_start = time.perf_counter()
+                heatmap = rise_explainer.explain(img_tensor)
+                self._synchronize_device(device)
+                explanation_times.append(time.perf_counter() - explanation_start)
+                heatmap_abs = np.abs(heatmap)
+
+                # Gini Sparsity
+                all_gini.append(self.gini_sparsity(heatmap_abs))
+                
+                # Insertion & Deletion
+                all_insertion.append(self.insertion_deletion_score(self.model, img_tensor, heatmap_abs, y_model[i], steps=20, mode="insertion"))
+                all_deletion.append(self.insertion_deletion_score(self.model, img_tensor, heatmap_abs, y_model[i], steps=20, mode="deletion"))
+
+                # Local Stability
+                img_noisy = (img_tensor + torch.randn_like(img_tensor) * noise_sigma).clamp(-5.0, 5.0)
+                heatmap_noisy = rise_explainer.explain(img_noisy)
+                stab = np.linalg.norm(vectorize_explanation(heatmap_abs) - vectorize_explanation(np.abs(heatmap_noisy)))
+                all_stability.append(stab)
+
+                # AOPC
+                if compute_aopc:
+                    with torch.no_grad():
+                        original_output = self.model(img_tensor)
+                        original_prob = torch.softmax(original_output, dim=1)[0]
+                        original_class = np.argmax(original_prob.cpu().numpy())
+                    try:
+                        bin_mask = (heatmap_abs > np.mean(heatmap_abs)).astype(np.float32)
+                        mask_t = torch.from_numpy(bin_mask).to(device).unsqueeze(0).unsqueeze(0)
+                        mask_t = mask_t.expand(1, img_tensor.shape[1], bin_mask.shape[0], bin_mask.shape[1])
+
+                    except Exception: pass
+                    _, _, mean_AOPC = self._compute_single_aopc(img_tensor.squeeze(0), heatmap_abs, original_class, original_prob, block_size, percentile, False)
+                    all_aopc_scores.append(mean_AOPC)
+
+        results = {
+            "RISE_Time": float(np.mean(explanation_times)) if explanation_times else 0.0,
+            "RISE_Gini_Sparsity": float(np.mean(all_gini)) if all_gini else 0.0,
+            "RISE_Insertion_AUC": float(np.mean(all_insertion)) if all_insertion else 0.0,
+            "RISE_Deletion_AUC": float(np.mean(all_deletion)) if all_deletion else 0.0,
+            "RISE_Local_Stability_L2": float(np.mean(all_stability)) if all_stability else 0.0,
+        }
+        if compute_aopc and len(all_aopc_scores) > 0: results["RISE_AOPC_Mean"] = float(np.mean(all_aopc_scores))
+        if len(rise_orig_probs) > 0:
+            try:
+                avg_drop, inc_rate = self.average_drop_increase(rise_orig_probs, rise_masked_probs)
+                results["RISE_AvgDrop"] = float(avg_drop)
+                results["RISE_IncreaseRate"] = float(inc_rate)
+            except Exception: pass
+        return results
+    

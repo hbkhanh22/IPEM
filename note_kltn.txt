@@ -21,3 +21,10 @@ Results and discussion:
 
 Limitation and future works
 - Không cần viết quá cụ thể, vào đúng trọng tâm là được
+
+
+
+Số lượng ảnh test 
+- Animals: 810
+- Caltech: 1371
+- Brain tumor: 1600
