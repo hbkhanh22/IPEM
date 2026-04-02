@@ -1,0 +1,23 @@
+# ========================================================
+# XAI Web Interface - Python Dependencies
+# ========================================================
+# Cài đặt bằng lệnh: pip install -r requirements_app.txt
+# 
+# Lưu ý: Các thư viện ML lõi (torch, torchvision, numpy, v.v) 
+# được cho là đã cài đặt từ project chuẩn của bạn.
+# File này chỉ chứa các thư viện cài thêm cho Web Backend.
+
+flask>=2.3.0
+flask-cors>=4.0.0
+
+# ========================================================
+# Thông tin thêm (Dành cho Frontend Node.js)
+# ========================================================
+# Để cài đặt UI Frontend, KHÔNG dùng pip. Bạn hãy chạy:
+#   cd frontend
+#   npm install
+#
+# Frontend sử dụng các thư viện chính:
+# - vite & react (Core framework)
+# - lucide-react (Hệ thống icons)
+# - recharts (Vẽ biểu đồ Top-5 dự đoán)

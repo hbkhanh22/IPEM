@@ -202,7 +202,6 @@ def explain_with_ipem(clf, img_tensor, class_names, output_dir, args_dataset, or
 
     ipem = IPEMExplainer(clf.model, class_names)
     heatmap, pred_class = ipem.explain(img_tensor.squeeze(0))
-    heatmap, pred_class = ipem.explain(img_tensor.squeeze(0))
     end_time = time.time()
     explanation_time = end_time - start_time
     # save_path = output_path / "ipem_explanation.png"
