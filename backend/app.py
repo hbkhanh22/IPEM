@@ -53,6 +53,8 @@ from sample_xAI import (
     explain_with_gradcam,
     explain_with_rise,
     explain_with_ipem,
+    AOPC_MoRF,
+    insertion_deletion_score,
 )
 
 IMG_SIZE = 224
@@ -275,6 +277,34 @@ def predict():
 
         xai_time = round(time.time() - start, 2)
 
+        # ── 5.1 Evaluate Metrics ─────────────────────────────────────────────
+        try:
+            ins_auc, _ = insertion_deletion_score(clf.model, img_tensor, heatmap, target_class=pred_class, steps=10, mode="insertion")
+            del_auc, _ = insertion_deletion_score(clf.model, img_tensor, heatmap, target_class=pred_class, steps=10, mode="deletion")
+
+            import uuid
+            import os
+            uid = str(uuid.uuid4())
+            tmp_img_path = os.path.join(tmp_dir, f"{uid}_img.png")
+            tmp_map_path = os.path.join(tmp_dir, f"{uid}_map.png")
+            
+            cv2.imwrite(tmp_img_path, cv2.cvtColor(org_img_np, cv2.COLOR_RGB2BGR))
+            
+            hm_norm_for_aopc = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
+            hm_gray = (hm_norm_for_aopc * 255).astype(np.uint8)
+            cv2.imwrite(tmp_map_path, hm_gray)
+            
+            total_AOPC = AOPC_MoRF(clf, tmp_map_path, tmp_img_path, mode='blur', block_size=8, img_size=IMG_SIZE)
+            aopc_score = total_AOPC[2]
+            
+            if os.path.exists(tmp_img_path): os.remove(tmp_img_path)
+            if os.path.exists(tmp_map_path): os.remove(tmp_map_path)
+        except Exception as err:
+            import traceback
+            traceback.print_exc()
+            print(f"Warning: Failed to compute metrics: {err}")
+            aopc_score, ins_auc, del_auc = 0.0, 0.0, 0.0
+
         # ── 6. Build visualization images ─────────────────────────────────────
         original_b64 = numpy_to_base64(org_img_np)
         heatmap_b64  = heatmap_overlay_to_base64(org_img_np, heatmap)
@@ -304,6 +334,9 @@ def predict():
             },
             "metrics": {
                 "explanation_time": xai_time,
+                "aopc_morf": float(aopc_score),
+                "insertion": float(ins_auc),
+                "deletion": float(del_auc),
             },
         })
 
