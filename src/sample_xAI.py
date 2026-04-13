@@ -202,6 +202,7 @@ def explain_with_ipem(clf, img_tensor, class_names, output_dir, args_dataset, or
 
     ipem = IPEMExplainer(clf.model, class_names)
     heatmap, pred_class = ipem.explain(img_tensor.squeeze(0))
+    heatmap, pred_class = ipem.explain(img_tensor.squeeze(0))
     end_time = time.time()
     explanation_time = end_time - start_time
     # save_path = output_path / "ipem_explanation.png"
@@ -317,7 +318,7 @@ def explain_with_rise(clf, img_tensor, class_names, output_dir, args_dataset, or
         output_path = Path(output_dir) / "RISE"
         output_path.mkdir(parents=True, exist_ok=True)
     
-    rise_explainer = RISE(model=clf.model, n_masks=1000, p=0.5, input_size=(224, 224), initial_mask_size=(11,11), n_batch=64, mask_path=None)
+    rise_explainer = RISE(model=clf.model, n_masks=10000, p=0.5, input_size=(224, 224), initial_mask_size=(11,11), n_batch=64, mask_path=None)
     heatmap_tensor = rise_explainer.explain(img_tensor)
     
     # Lấy thông tin dự đoán để chọn đúng heatmap của class đó

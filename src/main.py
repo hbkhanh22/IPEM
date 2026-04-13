@@ -39,7 +39,7 @@ def main():
         clf.load_trained_model()
         clf._build_dataloaders()
 
-        print(f"Choosing your explanation method: \n1. LIME\n2. SHAP\n3. IPEM\n4. GradCAM")
+        print(f"Choosing your explanation method: \n1. LIME\n2. SHAP\n3. IPEM\n4. GradCAM\n5. RISE")
         method = input("Enter the number of the explanation method: ")
         if method == "1":
             lime_results = clf.run_lime_metrics()

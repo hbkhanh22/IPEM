@@ -600,10 +600,10 @@ class XAIEvaluator:
 
     def evaluate_with_rise(self, loader, compute_aopc=True, block_size=8, percentile=None, noise_sigma=0.02):
         rise_explainer = RISE(
-            mode=self.model,
+            model=self.model,
             n_masks=1000,
             p=0.5,
-            initial_mask_size=(11, 11),
+            initial_mask_size=(7, 7),
         )
         device = next(self.model.parameters()).device
         all_gini, all_insertion, all_deletion = [], [], []
@@ -649,6 +649,12 @@ class XAIEvaluator:
                         mask_t = torch.from_numpy(bin_mask).to(device).unsqueeze(0).unsqueeze(0)
                         mask_t = mask_t.expand(1, img_tensor.shape[1], bin_mask.shape[0], bin_mask.shape[1])
 
+                        with torch.no_grad():
+                            masked_out = self.model(img_tensor * mask_t)
+                            masked_prob = torch.softmax(masked_out, dim=1)[0, original_class].item()
+                        rise_orig_probs.append(float(original_prob[original_class].item()))
+                        rise_masked_probs.append(float(masked_prob))
+                        
                     except Exception: pass
                     _, _, mean_AOPC = self._compute_single_aopc(img_tensor.squeeze(0), heatmap_abs, original_class, original_prob, block_size, percentile, False)
                     all_aopc_scores.append(mean_AOPC)

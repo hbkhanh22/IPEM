@@ -17,7 +17,7 @@ from torchvision import models, transforms
 from torchvision.datasets import ImageFolder
 from tqdm import tqdm
 
-from xai_metrics import XAIEvaluator
+from xai_metrics_eval import XAIEvaluator
 from PIL import ImageFile
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
@@ -323,7 +323,7 @@ class CaltechImageClassifier:
             preds = torch.softmax(self.model(batch), dim=1).cpu().numpy()
         return preds
     
-    def run_lime_metrics(self, num_samples=8):
+    def run_lime_metrics(self):
         """Tính metrics cho LIME"""
         evaluator = XAIEvaluator(self.model, self.class_names)
 
@@ -359,4 +359,11 @@ class CaltechImageClassifier:
         evaluator = XAIEvaluator(self.model, self.class_names)
         results = evaluator.evaluate_with_GradCAM(self.test_loader)
         print("📊 GradCAM metrics:", results)
+        return results
+
+    def run_rise_metrics(self):
+        """ Tính metrics cho RISE """
+        evaluator = XAIEvaluator(self.model, self.class_names)
+        results = evaluator.evaluate_with_rise(self.test_loader)
+        print("📊 RISE metrics:", results)
         return results
