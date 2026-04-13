@@ -40,20 +40,33 @@ const ResultPanel = ({ resultData }) => {
 
       {/* Basic Metrics Display */}
       <h3 style={{ marginBottom: '12px', fontSize: '1rem', color: 'var(--text-muted)' }}>XAI Performance Metrics</h3>
-      <div className="metric-grid">
+      <div className="metric-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
         <div className="metric-item">
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-            <Timer size={14} /> Eval Time
+            <Activity size={14} /> AOPC-MORF
           </div>
-          <div className="value">{metrics.explanation_time}s</div>
+          <div className="value">{metrics.aopc_morf !== undefined ? metrics.aopc_morf.toFixed(4) : 'N/A'}</div>
         </div>
         
-        {/* If backend sends AUC scores later, they can be displayed here. For now we just show time */}
         <div className="metric-item">
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-             Model status
+             <Target size={14} /> Insertion
           </div>
-          <div className="value" style={{ fontSize: '1.2rem', color: 'var(--success)' }}>Ready</div>
+          <div className="value">{metrics.insertion !== undefined ? metrics.insertion.toFixed(4) : 'N/A'}</div>
+        </div>
+
+        <div className="metric-item">
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+             <Target size={14} /> Deletion
+          </div>
+          <div className="value">{metrics.deletion !== undefined ? metrics.deletion.toFixed(4) : 'N/A'}</div>
+        </div>
+
+        <div className="metric-item">
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+            <Timer size={14} /> Time
+          </div>
+          <div className="value">{metrics.explanation_time !== undefined ? `${metrics.explanation_time}s` : 'N/A'}</div>
         </div>
       </div>
 

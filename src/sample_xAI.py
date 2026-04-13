@@ -535,6 +535,110 @@ def AOPC_MoRF(clf, img_map_path, img_path, mode='blur', block_size=8, block_per_
     total_AOPC = (class_origin.item(), AOPC, np.sum(AOPC)/count_blocks)
     return total_AOPC
 
+def insertion_deletion_score(model, img_tensor, heatmap, target_class, steps=20, mode="insertion"):
+    """
+    Tính Insertion/Deletion score cho một ảnh và heatmap.
+    - img_tensor: torch.Tensor, shape (C,H,W) or (1,C,H,W), ảnh gốc.
+    - heatmap: numpy array, shape (H,W) or (H,W,C), heatmap giải thích.
+    - target_class: int, lớp mục tiêu để theo dõi xác suất.
+    - steps: số bước perturbation.
+    - mode: "insertion" hoặc "deletion".
+    Trả về AUC score.
+    """
+    device = next(model.parameters()).device
+
+    # Chuẩn bị transform (not used directly here but kept for compatibility)
+    transform = transforms.Compose([
+        transforms.Resize((img_tensor.shape[1] if img_tensor.dim() > 2 else img_tensor.shape[2], img_tensor.shape[2] if img_tensor.dim() > 2 else img_tensor.shape[1])),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ])
+
+    # Chuẩn bị ảnh nền (baseline = all-zero) used for both insertion and deletion
+    baseline = torch.zeros_like(img_tensor).to(device)
+
+    # Chuẩn bị heatmap: validate and convert to single-channel
+    hm = np.array(heatmap)
+    if hm.size == 0:
+        raise ValueError("Heatmap is empty or invalid for resizing")
+    # If heatmap has channels (e.g., C,H,W or H,W,C), average to single channel
+    if hm.ndim == 3:
+        # try to detect channel-first (C,H,W) or channel-last (H,W,C)
+        if hm.shape[0] <= 4 and hm.shape[0] != hm.shape[1]:
+            # likely (C,H,W)
+            hm = hm.mean(axis=0)
+        else:
+            # likely (H,W,C)
+            hm = hm.mean(axis=2)
+    # Replace NaN/inf with zeros
+    hm = np.nan_to_num(hm, nan=0.0, posinf=0.0, neginf=0.0)
+    # Normalize to [0,1] if possible
+    if hm.max() - hm.min() > 0:
+        hm = (hm - hm.min()) / (hm.max() - hm.min())
+    else:
+        hm = np.zeros_like(hm)
+
+    # Resize heatmap to match image size
+    # Determine target width/height from img_tensor shape
+    if img_tensor.dim() == 4:
+        _, C, H, W = img_tensor.shape
+    elif img_tensor.dim() == 3:
+        C, H, W = img_tensor.shape
+    else:
+        raise ValueError(f"Unsupported img_tensor shape: {img_tensor.shape}")
+
+    target_w, target_h = int(W), int(H)
+    try:
+        # cv2.resize expects (width, height); convert to uint8 to avoid issues
+        heatmap_resized = cv2.resize((hm * 255).astype(np.uint8), (target_w, target_h), interpolation=cv2.INTER_LINEAR).astype(np.float32) / 255.0
+    except Exception as e:
+        raise RuntimeError(f"Failed to resize heatmap: {e}")
+
+    heatmap_flat = heatmap_resized.flatten()
+    indices = np.argsort(-heatmap_flat)  # sắp xếp giảm dần
+
+    # Tính xác suất qua các bước
+    probs = []
+    for step in range(steps + 1):
+        fraction = step / steps
+        num_pixels = int(fraction * len(heatmap_flat))
+
+        mask = np.zeros_like(heatmap_flat)
+        mask[indices[:num_pixels]] = 1.0
+        mask = mask.reshape(heatmap_resized.shape)
+
+        # Tạo mask tensor với dạng phù hợp để broadcast
+        mask_t = torch.tensor(mask, dtype=img_tensor.dtype, device=device)
+        if img_tensor.dim() == 4:
+            # make shape (1,1,H,W) so it broadcasts to (1,C,H,W)
+            mask_t = mask_t.unsqueeze(0).unsqueeze(1)
+        else:
+            # img_tensor dim==3 (C,H,W) -> make mask (1,H,W) which will broadcast across channels
+            mask_t = mask_t.unsqueeze(0)
+
+        # Tạo ảnh perturbed
+        if mode == "insertion":
+            # start from baseline and insert pixels from original
+            perturbed_img = baseline * (1 - mask_t) + img_tensor * mask_t
+        else:  # deletion
+            # start from original and replace masked pixels with baseline
+            perturbed_img = img_tensor * (1 - mask_t) + baseline * mask_t
+
+        # Ensure perturbed_img has batch dimension when passing to model
+        if perturbed_img.dim() == 3:
+            perturbed_in = perturbed_img.unsqueeze(0)
+        else:
+            perturbed_in = perturbed_img
+
+        with torch.no_grad():
+            output = model(perturbed_in)
+            prob = torch.softmax(output, dim=1)[0, target_class].item()
+
+        probs.append(prob)
+    # Tính AUC
+    auc_score = np.trapezoid(probs, dx=1.0/steps)
+    return auc_score, probs
+
 def explain_all_parallel(clf, img_tensor, img_np, org_img, class_names, output_dir, args_dataset):
     """
     Chạy tất cả các phương pháp giải thích (LIME, SHAP, IPEM, GradCAM, RISE) 
