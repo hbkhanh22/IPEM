@@ -2,7 +2,8 @@ from typing import List, Tuple
 import numpy as np
 import torch
 import cv2
-from skimage.segmentation import slic
+from skimage.segmentation import slic, watershed
+from skimage.filters import sobel
 from skimage.util import img_as_float
 
 class IPEMExplainer:
@@ -22,6 +23,119 @@ class IPEMExplainer:
         self.grid_size = grid_size
         self.perturb_modes = perturb_modes
         self.device = device
+
+    def _get_baseline_label(self, img: torch.Tensor) -> int:
+        with torch.no_grad():
+            baseline_logits = self.model(img.unsqueeze(0))
+            return baseline_logits.argmax(dim=1).item()
+
+    def _prepare_image_for_segmentation(self, img_tensor: torch.Tensor) -> np.ndarray:
+        img_np = img_tensor.detach().cpu().float().numpy().transpose(1, 2, 0)
+        img_min = img_np.min()
+        img_max = img_np.max()
+        img_np = (img_np - img_min) / (img_max - img_min + 1e-8)
+        return img_as_float(img_np)
+
+    def _build_watershed_segments(
+        self,
+        img_segment: np.ndarray,
+        n_markers: int = 100,
+        compactness: float = 0.001,
+        sigma: float = 1.0
+    ) -> np.ndarray:
+        H, W = img_segment.shape[:2]
+
+        if img_segment.ndim == 3 and img_segment.shape[2] >= 3:
+            gray = cv2.cvtColor((img_segment * 255).astype(np.uint8), cv2.COLOR_RGB2GRAY)
+            gray = gray.astype(np.float32) / 255.0
+        elif img_segment.ndim == 3:
+            gray = img_segment[..., 0]
+        else:
+            gray = img_segment
+
+        if sigma > 0:
+            gray = cv2.GaussianBlur(gray, (0, 0), sigmaX=sigma)
+
+        gradient = sobel(gray)
+
+        n_markers = max(4, int(n_markers))
+        marker_rows = max(2, int(np.sqrt(n_markers * H / max(W, 1))))
+        marker_cols = max(2, int(np.ceil(n_markers / marker_rows)))
+
+        ys = np.linspace(0, H - 1, marker_rows, dtype=np.int32)
+        xs = np.linspace(0, W - 1, marker_cols, dtype=np.int32)
+
+        markers = np.zeros((H, W), dtype=np.int32)
+        label = 1
+        for y in ys:
+            for x in xs:
+                markers[y, x] = label
+                label += 1
+
+        segments = watershed(
+            gradient,
+            markers=markers,
+            compactness=compactness,
+        )
+        return segments.astype(np.int64) - 1
+
+    def _explain_with_segments(
+        self,
+        img: torch.Tensor,
+        baseline_label: int,
+        segments: np.ndarray,
+        n_samples: int,
+        mask_prob: float,
+        sigma_smooth: float,
+        batch_size: int
+    ) -> np.ndarray:
+        segments = segments.astype(np.int64)
+        K = int(segments.max()) + 1
+        if K <= 0:
+            raise ValueError("Segmentation must contain at least one segment.")
+
+        segments_t = torch.from_numpy(segments).to(self.device)
+        masks_sp = (torch.rand(n_samples, K, device=self.device) < mask_prob).float()
+
+        empty_rows = masks_sp.sum(dim=1) == 0
+        if empty_rows.any():
+            rand_idx = torch.randint(0, K, (empty_rows.sum().item(),), device=self.device)
+            masks_sp[empty_rows, rand_idx] = 1.0
+
+        pixel_masks = masks_sp[:, segments_t].unsqueeze(1)
+        perturbed_imgs = img.unsqueeze(0) * pixel_masks
+
+        probs_all = []
+        with torch.no_grad():
+            for start in range(0, n_samples, batch_size):
+                end = min(start + batch_size, n_samples)
+                preds = self.model(perturbed_imgs[start:end])
+                probs_all.append(torch.softmax(preds, dim=1)[:, baseline_label])
+
+        probs = torch.cat(probs_all, dim=0).view(-1, 1)
+
+        on_mask = masks_sp
+        off_mask = 1.0 - masks_sp
+
+        cnt_on = on_mask.sum(dim=0) + 1e-8
+        cnt_off = off_mask.sum(dim=0) + 1e-8
+
+        mean_on = (probs * on_mask).sum(dim=0) / cnt_on
+        mean_off = (probs * off_mask).sum(dim=0) / cnt_off
+
+        var_on = (((probs - mean_on.unsqueeze(0)) ** 2) * on_mask).sum(dim=0) / cnt_on
+        var_off = (((probs - mean_off.unsqueeze(0)) ** 2) * off_mask).sum(dim=0) / cnt_off
+
+        importance_sp = (mean_on - mean_off) / (torch.sqrt(var_on + var_off) + 1e-8)
+        importance_sp = (importance_sp - importance_sp.min()) / (
+            importance_sp.max() - importance_sp.min() + 1e-8
+        )
+
+        heat = importance_sp[segments_t].detach().cpu().numpy()
+        if sigma_smooth > 0:
+            heat = cv2.GaussianBlur(heat, (0, 0), sigmaX=sigma_smooth)
+
+        return (heat - heat.min()) / (heat.max() - heat.min() + 1e-8)
 
     def _predict_from_importance(self, baseline_logits, importance_map):
         """
@@ -164,129 +278,171 @@ class IPEMExplainer:
 
         return final_heat, baseline_label
 
-    def explain_by_slic(
-        self, 
+    def explain_by_watershed(
+        self,
         img_tensor: torch.Tensor,
         n_samples: int = 400,
         mask_prob: float = 0.5,
-        sigma_smooth: float = 6.0,
-        n_segments_list: list=[80, 120],
-        compactness: float = 10.0,
-        slic_sigma: float = 1.0,
+        sigma_smooth: float = 5.0,
+        n_segments_list: list = [80, 120],
+        watershed_sigma: float = 1.0,
+        compactness: float = 0.001,
         batch_size: int = 64
     ):
         self.model.eval()
-        C, H, W = img_tensor.shape
         img = img_tensor.to(self.device)
-
-        # ----------------------------------
-        # 1. Baseline prediction
-        # ----------------------------------
-        with torch.no_grad():
-            baseline_logits = self.model(img.unsqueeze(0))
-            baseline_label = baseline_logits.argmax(dim=1).item()
-        
-        # ----------------------------------
-        # 2. Preprocess image for SLIC
-        # ----------------------------------
-        img_np = img_tensor.detach().cpu().float().numpy().transpose(1,2,0)
-
-        img_min = img_np.min()
-        img_max = img_np.max()
-
-        img_segment = (img_np - img_min) / (img_max - img_min + 1e-8)
+        baseline_label = self._get_baseline_label(img)
+        img_segment = self._prepare_image_for_segmentation(img_tensor)
 
         heatmaps = []
-
-        # ----------------------------------
-        # 3. Iterate over different numbers of segments
-        # ----------------------------------
         for n_segments in n_segments_list:
-            segments = slic(
+            segments = self._build_watershed_segments(
                 img_segment,
-                n_segments=n_segments,
+                n_markers=n_segments,
                 compactness=compactness,
-                sigma=slic_sigma,
-                start_label=0,
-                channel_axis=-1
+                sigma=watershed_sigma
             )
-
-            segments = segments.astype(np.int64)
-            K = int(segments.max()) + 1
-
-            segments_t = torch.from_numpy(segments).to(self.device)
-
-            masks_sp = (torch.rand(n_samples, K, device=self.device) < mask_prob).float()
-
-            # Ensure not-all-zero masks
-            empty_rows = masks_sp.sum(dim=1) == 0
-            if empty_rows.any():
-                rand_idx = torch.randint(0, K, (empty_rows.sum().item(),), device=self.device)
-                masks_sp[empty_rows, rand_idx] = 1.0
-
-            # --------------------------------------------------
-            # 4. Expand superpixel masks -> pixel masks
-            #    pixel_masks: (n_samples, H, W)
-            # --------------------------------------------------
-            pixel_masks = masks_sp[:, segments_t]  # advanced indexing -> (n_samples, H, W)
-            pixel_masks = pixel_masks.unsqueeze(1)  # (n_samples, 1, H, W)
-
-            # Broadcast to channels
-            perturbed_imgs = img.unsqueeze(0) * pixel_masks  # (n_samples, C, H, W)
-
-            # --------------------------------------------------
-            # 5. Model inference in mini-batches
-            # --------------------------------------------------
-            probs_all = []
-            with torch.no_grad():
-                for start in range(0, n_samples, batch_size):
-                    end = min(start + batch_size, n_samples)
-                    preds = self.model(perturbed_imgs[start:end])
-                    probs = torch.softmax(preds, dim=1)[:, baseline_label]
-                    probs_all.append(probs)
-
-            probs = torch.cat(probs_all, dim=0)  # (n_samples,)
-            probs = probs.view(-1, 1)  # (n_samples, 1)
-
-            # --------------------------------------------------
-            # 6. Vectorized Monte Carlo stats on superpixels
-            # --------------------------------------------------
-            on_mask = masks_sp                  # (n_samples, K)
-            off_mask = 1.0 - masks_sp          # (n_samples, K)
-
-            cnt_on = on_mask.sum(dim=0) + 1e-8     # (K,)
-            cnt_off = off_mask.sum(dim=0) + 1e-8   # (K,)
-
-            mean_on = (probs * on_mask).sum(dim=0) / cnt_on     # (K,)
-            mean_off = (probs * off_mask).sum(dim=0) / cnt_off  # (K,)
-
-            var_on = (((probs - mean_on.unsqueeze(0)) ** 2) * on_mask).sum(dim=0) / cnt_on
-            var_off = (((probs - mean_off.unsqueeze(0)) ** 2) * off_mask).sum(dim=0) / cnt_off
-
-            importance_sp = (mean_on - mean_off) / (torch.sqrt(var_on + var_off) + 1e-8)  # (K,)
-
-            # Normalize superpixel importance
-            importance_sp = (importance_sp - importance_sp.min()) / (
-                importance_sp.max() - importance_sp.min() + 1e-8
+            heat = self._explain_with_segments(
+                img=img,
+                baseline_label=baseline_label,
+                segments=segments,
+                n_samples=n_samples,
+                mask_prob=mask_prob,
+                sigma_smooth=sigma_smooth,
+                batch_size=batch_size
             )
-
-            # --------------------------------------------------
-            # 7. Project superpixel importance back to pixel space
-            # --------------------------------------------------
-            heat = importance_sp[segments_t].detach().cpu().numpy()  # (H, W)
-
-            if sigma_smooth > 0:
-                heat = cv2.GaussianBlur(heat, (0, 0), sigmaX=sigma_smooth)
-            
-            heat = (heat - heat.min()) / (heat.max() - heat.min() + 1e-8)
             heatmaps.append(heat)
 
-        # --------------------------------------------------
-        # 8. Multi-scale fusion
-        # --------------------------------------------------
         final_heat = np.mean(heatmaps, axis=0)
         final_heat = (final_heat - final_heat.min()) / (
             final_heat.max() - final_heat.min() + 1e-8
         )
 
         return final_heat, baseline_label
+
+    # def explain_by_slic(
+    #     self, 
+    #     img_tensor: torch.Tensor,
+    #     n_samples: int = 400,
+    #     mask_prob: float = 0.5,
+    #     sigma_smooth: float = 6.0,
+    #     n_segments_list: list=[80, 120],
+    #     compactness: float = 10.0,
+    #     slic_sigma: float = 1.0,
+    #     batch_size: int = 64
+    # ):
+    #     self.model.eval()
+    #     C, H, W = img_tensor.shape
+    #     img = img_tensor.to(self.device)
+
+    #     # ----------------------------------
+    #     # 1. Baseline prediction
+    #     # ----------------------------------
+    #     with torch.no_grad():
+    #         baseline_logits = self.model(img.unsqueeze(0))
+    #         baseline_label = baseline_logits.argmax(dim=1).item()
+        
+    #     # ----------------------------------
+    #     # 2. Preprocess image for SLIC
+    #     # ----------------------------------
+    #     img_np = img_tensor.detach().cpu().float().numpy().transpose(1,2,0)
+
+    #     img_min = img_np.min()
+    #     img_max = img_np.max()
+
+    #     img_segment = (img_np - img_min) / (img_max - img_min + 1e-8)
+
+    #     heatmaps = []
+
+    #     # ----------------------------------
+    #     # 3. Iterate over different numbers of segments
+    #     # ----------------------------------
+    #     for n_segments in n_segments_list:
+    #         segments = slic(
+    #             img_segment,
+    #             n_segments=n_segments,
+    #             compactness=compactness,
+    #             sigma=slic_sigma,
+    #             start_label=0,
+    #             channel_axis=-1
+    #         )
+
+    #         segments = segments.astype(np.int64)
+    #         K = int(segments.max()) + 1
+
+    #         segments_t = torch.from_numpy(segments).to(self.device)
+
+    #         masks_sp = (torch.rand(n_samples, K, device=self.device) < mask_prob).float()
+
+    #         # Ensure not-all-zero masks
+    #         empty_rows = masks_sp.sum(dim=1) == 0
+    #         if empty_rows.any():
+    #             rand_idx = torch.randint(0, K, (empty_rows.sum().item(),), device=self.device)
+    #             masks_sp[empty_rows, rand_idx] = 1.0
+
+    #         # --------------------------------------------------
+    #         # 4. Expand superpixel masks -> pixel masks
+    #         #    pixel_masks: (n_samples, H, W)
+    #         # --------------------------------------------------
+    #         pixel_masks = masks_sp[:, segments_t]  # advanced indexing -> (n_samples, H, W)
+    #         pixel_masks = pixel_masks.unsqueeze(1)  # (n_samples, 1, H, W)
+
+    #         # Broadcast to channels
+    #         perturbed_imgs = img.unsqueeze(0) * pixel_masks  # (n_samples, C, H, W)
+
+    #         # --------------------------------------------------
+    #         # 5. Model inference in mini-batches
+    #         # --------------------------------------------------
+    #         probs_all = []
+    #         with torch.no_grad():
+    #             for start in range(0, n_samples, batch_size):
+    #                 end = min(start + batch_size, n_samples)
+    #                 preds = self.model(perturbed_imgs[start:end])
+    #                 probs = torch.softmax(preds, dim=1)[:, baseline_label]
+    #                 probs_all.append(probs)
+
+    #         probs = torch.cat(probs_all, dim=0)  # (n_samples,)
+    #         probs = probs.view(-1, 1)  # (n_samples, 1)
+
+    #         # --------------------------------------------------
+    #         # 6. Vectorized Monte Carlo stats on superpixels
+    #         # --------------------------------------------------
+    #         on_mask = masks_sp                  # (n_samples, K)
+    #         off_mask = 1.0 - masks_sp          # (n_samples, K)
+
+    #         cnt_on = on_mask.sum(dim=0) + 1e-8     # (K,)
+    #         cnt_off = off_mask.sum(dim=0) + 1e-8   # (K,)
+
+    #         mean_on = (probs * on_mask).sum(dim=0) / cnt_on     # (K,)
+    #         mean_off = (probs * off_mask).sum(dim=0) / cnt_off  # (K,)
+
+    #         var_on = (((probs - mean_on.unsqueeze(0)) ** 2) * on_mask).sum(dim=0) / cnt_on
+    #         var_off = (((probs - mean_off.unsqueeze(0)) ** 2) * off_mask).sum(dim=0) / cnt_off
+
+    #         importance_sp = (mean_on - mean_off) / (torch.sqrt(var_on + var_off) + 1e-8)  # (K,)
+
+    #         # Normalize superpixel importance
+    #         importance_sp = (importance_sp - importance_sp.min()) / (
+    #             importance_sp.max() - importance_sp.min() + 1e-8
+    #         )
+
+    #         # --------------------------------------------------
+    #         # 7. Project superpixel importance back to pixel space
+    #         # --------------------------------------------------
+    #         heat = importance_sp[segments_t].detach().cpu().numpy()  # (H, W)
+
+    #         if sigma_smooth > 0:
+    #             heat = cv2.GaussianBlur(heat, (0, 0), sigmaX=sigma_smooth)
+            
+    #         heat = (heat - heat.min()) / (heat.max() - heat.min() + 1e-8)
+    #         heatmaps.append(heat)
+
+    #     # --------------------------------------------------
+    #     # 8. Multi-scale fusion
+    #     # --------------------------------------------------
+    #     final_heat = np.mean(heatmaps, axis=0)
+    #     final_heat = (final_heat - final_heat.min()) / (
+    #         final_heat.max() - final_heat.min() + 1e-8
+    #     )
+
+    #     return final_heat, baseline_label

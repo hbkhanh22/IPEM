@@ -201,8 +201,8 @@ def explain_with_ipem(clf, img_tensor, class_names, output_dir, args_dataset, or
         output_path.mkdir(parents=True, exist_ok=True)
 
     ipem = IPEMExplainer(clf.model, class_names)
-    heatmap, pred_class = ipem.explain(img_tensor.squeeze(0))
-    heatmap, pred_class = ipem.explain(img_tensor.squeeze(0))
+    # heatmap, pred_class = ipem.explain(img_tensor.squeeze(0))
+    heatmap, pred_class = ipem.explain_by_watershed(img_tensor.squeeze(0))
     end_time = time.time()
     explanation_time = end_time - start_time
     # save_path = output_path / "ipem_explanation.png"
@@ -218,6 +218,7 @@ def explain_with_ipem(clf, img_tensor, class_names, output_dir, args_dataset, or
     )
 
     return heatmap
+
 
 def explain_with_gradcam(clf, img_tensor, class_names, output_dir, args_dataset, org_img):
     start_time = time.time()
@@ -266,49 +267,6 @@ def explain_with_gradcam(clf, img_tensor, class_names, output_dir, args_dataset,
 
     return heatmap
 
-def explain_with_shapcam(clf, img_tensor, class_names, output_dir, args_dataset, org_img):
-    start_time = time.time()
-    print("🔍 Đang chạy ShapleyCAM...")
-    if output_dir:
-        output_dir = f"{output_dir}/{args_dataset}"
-        output_path = Path(output_dir) / "ShapleyCAM"
-        output_path.mkdir(parents=True, exist_ok=True)
-    
-    def get_last_conv_layer(model):
-        last_conv = None
-        for name, module in model.named_modules():
-            if isinstance(module, nn.Conv2d):
-                last_conv = module
-        if last_conv is None:
-            raise ValueError("❌ Không tìm thấy Conv2D nào trong model. ShapleyCAM yêu cầu CNN.")
-        return last_conv
-
-    target_layer = get_last_conv_layer(clf.model)
-    
-    from pytorch_grad_cam.shapley_cam import ShapleyCAM
-    cam = ShapleyCAM(model=clf.model, target_layers=[target_layer])
-
-    img_tensor = img_tensor.to(device)
-    with torch.no_grad():
-        logits = clf.model(img_tensor)
-        y_model = logits.argmax(1).cpu().numpy()[0]
-
-    target = [ClassifierOutputTarget(y_model)]
-    heatmap = cam(input_tensor=img_tensor, targets=target)[0]
-    end_time = time.time()
-    explanation_time = end_time - start_time
-    visualize_counterfactual_explanation(
-        classifier=clf,
-        org_img=org_img,
-        heatmap=heatmap,
-        model_name="ShapleyCAM",
-        pred_class=predict_with_model(clf.model, img_tensor)[0],
-        original_probs=predict_with_model(clf.model, img_tensor)[2],
-        output_path=output_path,
-        explanation_time=explanation_time
-    )
-
-    return heatmap
 
 def explain_with_rise(clf, img_tensor, class_names, output_dir, args_dataset, org_img):
     start_time = time.time()
@@ -678,3 +636,4 @@ def explain_all_parallel(clf, img_tensor, img_np, org_img, class_names, output_d
     end_time = time.time()
     print(f"⏱️ Tổng thời gian chạy song song: {end_time - start_time:.2f}s")
     return results
+
