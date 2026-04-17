@@ -462,7 +462,8 @@ class XAIEvaluator:
                 img_t = imgs[i]
                 self._synchronize_device(device)
                 explanation_start = time.perf_counter()
-                heat, pred_from_importance = ipem.explain(img_t.to(device))
+                # heat, pred_from_importance = ipem.explain(img_t.to(device))
+                heat, pred_from_importance = ipem.explain_by_watershed(img_t.to(device))
                 self._synchronize_device(device)
                 explanation_times.append(time.perf_counter() - explanation_start)
                 heat_abs = np.abs(heat)
@@ -601,7 +602,7 @@ class XAIEvaluator:
     def evaluate_with_rise(self, loader, compute_aopc=True, block_size=8, percentile=None, noise_sigma=0.02):
         rise_explainer = RISE(
             model=self.model,
-            n_masks=1000,
+            n_masks=500,
             p=0.5,
             initial_mask_size=(7, 7),
         )
@@ -611,32 +612,53 @@ class XAIEvaluator:
         all_aopc_scores = []
         rise_orig_probs, rise_masked_probs = [], []
         explanation_times = []
-
-        for batch_imgs, batch_labels in loader:
+        for b_idx, (batch_imgs, batch_labels) in enumerate(loader):
+            print(f"Batch {b_idx} of {len(loader)}")
             imgs = batch_imgs.to(device)
             y_model = self.model(imgs).argmax(1).cpu().numpy()
 
             for i in range(len(imgs)):
                 img_tensor = imgs[i].unsqueeze(0)
-                self._synchronize_device(device)
-                explanation_start = time.perf_counter()
+                # self._synchronize_device(device)
+                # explanation_start = time.perf_counter()
                 heatmap = rise_explainer.explain(img_tensor)
-                self._synchronize_device(device)
-                explanation_times.append(time.perf_counter() - explanation_start)
-                heatmap_abs = np.abs(heatmap)
+                # self._synchronize_device(device)
+                # explanation_times.append(time.perf_counter() - explanation_start)
+                # # RISE trả về (n_classes, H, W); phải lấy kênh đúng lớp dự đoán (giống sample_xAI.explain_with_rise)
+                if torch.is_tensor(heatmap):
+                    heatmap_abs = np.abs(heatmap[int(y_model[i])].detach().cpu().numpy())
+                else:
+                    heatmap_abs = np.abs(np.asarray(heatmap)[int(y_model[i])])
+                _, _, h_img, w_img = img_tensor.shape
+                if heatmap_abs.shape != (h_img, w_img):
+                    heatmap_abs = cv2.resize(
+                        heatmap_abs.astype(np.float32),
+                        (int(w_img), int(h_img)),
+                        interpolation=cv2.INTER_LINEAR,
+                    )
 
-                # Gini Sparsity
-                all_gini.append(self.gini_sparsity(heatmap_abs))
+                # # Gini Sparsity
+                # all_gini.append(self.gini_sparsity(heatmap_abs))
                 
-                # Insertion & Deletion
-                all_insertion.append(self.insertion_deletion_score(self.model, img_tensor, heatmap_abs, y_model[i], steps=20, mode="insertion"))
-                all_deletion.append(self.insertion_deletion_score(self.model, img_tensor, heatmap_abs, y_model[i], steps=20, mode="deletion"))
+                # # Insertion & Deletion
+                # all_insertion.append(self.insertion_deletion_score(self.model, img_tensor, heatmap_abs, y_model[i], steps=20, mode="insertion"))
+                # all_deletion.append(self.insertion_deletion_score(self.model, img_tensor, heatmap_abs, y_model[i], steps=20, mode="deletion"))
 
-                # Local Stability
-                img_noisy = (img_tensor + torch.randn_like(img_tensor) * noise_sigma).clamp(-5.0, 5.0)
-                heatmap_noisy = rise_explainer.explain(img_noisy)
-                stab = np.linalg.norm(vectorize_explanation(heatmap_abs) - vectorize_explanation(np.abs(heatmap_noisy)))
-                all_stability.append(stab)
+                # # Local Stability
+                # img_noisy = (img_tensor + torch.randn_like(img_tensor) * noise_sigma).clamp(-5.0, 5.0)
+                # heatmap_noisy = rise_explainer.explain(img_noisy)
+                # if torch.is_tensor(heatmap_noisy):
+                #     hm_noisy_2d = np.abs(heatmap_noisy[int(y_model[i])].detach().cpu().numpy())
+                # else:
+                #     hm_noisy_2d = np.abs(np.asarray(heatmap_noisy)[int(y_model[i])])
+                # if hm_noisy_2d.shape != (h_img, w_img):
+                #     hm_noisy_2d = cv2.resize(
+                #         hm_noisy_2d.astype(np.float32),
+                #         (int(w_img), int(h_img)),
+                #         interpolation=cv2.INTER_LINEAR,
+                #     )
+                # stab = np.linalg.norm(vectorize_explanation(heatmap_abs) - vectorize_explanation(hm_noisy_2d))
+                # all_stability.append(stab)
 
                 # AOPC
                 if compute_aopc:
@@ -656,17 +678,17 @@ class XAIEvaluator:
                         rise_masked_probs.append(float(masked_prob))
                         
                     except Exception: pass
-                    _, _, mean_AOPC = self._compute_single_aopc(img_tensor.squeeze(0), heatmap_abs, original_class, original_prob, block_size, percentile, False)
-                    all_aopc_scores.append(mean_AOPC)
+                    # _, _, mean_AOPC = self._compute_single_aopc(img_tensor.squeeze(0), heatmap_abs, original_class, original_prob, block_size, percentile, False)
+                    # all_aopc_scores.append(mean_AOPC)
 
         results = {
-            "RISE_Time": float(np.mean(explanation_times)) if explanation_times else 0.0,
-            "RISE_Gini_Sparsity": float(np.mean(all_gini)) if all_gini else 0.0,
-            "RISE_Insertion_AUC": float(np.mean(all_insertion)) if all_insertion else 0.0,
-            "RISE_Deletion_AUC": float(np.mean(all_deletion)) if all_deletion else 0.0,
-            "RISE_Local_Stability_L2": float(np.mean(all_stability)) if all_stability else 0.0,
+            # "RISE_Time": float(np.mean(explanation_times)) if explanation_times else 0.0,
+            # "RISE_Gini_Sparsity": float(np.mean(all_gini)) if all_gini else 0.0,
+            # "RISE_Insertion_AUC": float(np.mean(all_insertion)) if all_insertion else 0.0,
+            # "RISE_Deletion_AUC": float(np.mean(all_deletion)) if all_deletion else 0.0,
+            # "RISE_Local_Stability_L2": float(np.mean(all_stability)) if all_stability else 0.0,
         }
-        if compute_aopc and len(all_aopc_scores) > 0: results["RISE_AOPC_Mean"] = float(np.mean(all_aopc_scores))
+        # if compute_aopc and len(all_aopc_scores) > 0: results["RISE_AOPC_Mean"] = float(np.mean(all_aopc_scores))
         if len(rise_orig_probs) > 0:
             try:
                 avg_drop, inc_rate = self.average_drop_increase(rise_orig_probs, rise_masked_probs)
