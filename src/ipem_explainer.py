@@ -281,7 +281,7 @@ class IPEMExplainer:
     def explain_by_watershed(
         self,
         img_tensor: torch.Tensor,
-        n_samples: int = 400,
+        n_samples: int = 1000,
         mask_prob: float = 0.5,
         sigma_smooth: float = 5.0,
         n_segments_list: list = [80, 120],

@@ -6,7 +6,7 @@ from skimage.transform import resize
 from torchvision import transforms
 from PIL import Image
 from ipem_explainer import IPEMExplainer
-from ipem_improved import IPEMImprovedExplainer
+# from ipem_improved import IPEMImprovedExplainer
 from rise_explainer import RISE
 from lime import lime_image
 import shap

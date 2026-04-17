@@ -230,6 +230,7 @@ class AnimalImageClassifier:
         if self.model is None:
             self._build_model()
         model_path = self.output_dir / f'{self.args_model_name}_best_model.pt'
+        print(model_path)
         if not model_path.exists():
             raise FileNotFoundError(f"Không tìm thấy {model_path}, cần train trước khi test.")
 
