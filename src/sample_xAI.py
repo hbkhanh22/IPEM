@@ -276,7 +276,7 @@ def explain_with_rise(clf, img_tensor, class_names, output_dir, args_dataset, or
         output_path = Path(output_dir) / "RISE"
         output_path.mkdir(parents=True, exist_ok=True)
     
-    rise_explainer = RISE(model=clf.model, n_masks=10000, p=0.5, input_size=(224, 224), initial_mask_size=(11,11), n_batch=64, mask_path=None)
+    rise_explainer = RISE(model=clf.model, n_masks=10000, p=0.5, input_size=(224, 224), initial_mask_size=(7,7), n_batch=64, mask_path=None)
     heatmap_tensor = rise_explainer.explain(img_tensor)
     
     # Lấy thông tin dự đoán để chọn đúng heatmap của class đó
@@ -309,12 +309,6 @@ def visualize_counterfactual_explanation(classifier, org_img, heatmap, model_nam
     cv2.imwrite(f"{output_path}/{model_name}_mask.png", renormalized_heatmap)
 
     H, W = org_img.shape[:2]
-
-    # if model_name == "LIME":
-    #     heatmap_norm = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min())
-    #     mask = resize(heatmap_norm, (H, W), preserve_range=True).astype(np.uint8)
-    # else:
-
     heatmap_norm = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min())
     mask = (heatmap_norm >= 0.7).astype(np.uint8)
 
@@ -334,16 +328,16 @@ def visualize_counterfactual_explanation(classifier, org_img, heatmap, model_nam
         new_class = torch.argmax(outputs, dim=1).item()
 
     # Dùng gridspec: 2 cột ảnh bằng nhau + 1 cột nhỏ cho colorbar
-    fig = plt.figure(figsize=(15, 6))
-    gs = fig.add_gridspec(
-        1, 3,
-        width_ratios=[1, 0.03, 1],  # 2 ảnh bằng nhau, cột thứ 3 cho colorbar
-        wspace=0.01
-    )
+    fig, ax0 = plt.subplots(figsize=(15, 6))
+    # gs = fig.add_gridspec(
+    #     1, 3,
+    #     width_ratios=[1, 0.03, 1],  # 2 ảnh bằng nhau, cột thứ 3 cho colorbar
+    #     wspace=0.01
+    # )
 
-    ax0 = fig.add_subplot(gs[0])
-    cax = fig.add_subplot(gs[1])  # axes riêng cho colorbar
-    ax1 = fig.add_subplot(gs[2])
+    # ax0 = fig.add_subplot(gs[0])
+    # cax = fig.add_subplot(gs[1])  # axes riêng cho colorbar
+    # ax1 = fig.add_subplot(gs[2])
     # cax = fig.add_subplot(gs[2])  # axes riêng cho colorbar
 
     # # Ảnh gốc
@@ -354,25 +348,35 @@ def visualize_counterfactual_explanation(classifier, org_img, heatmap, model_nam
     # Overlay saliency map
     ax0.imshow(org_img, alpha=1.0)
     hm = ax0.imshow(heatmap, cmap=cmap, alpha=alpha)
+    ax0.axis("off")
+
+    if output_path:
+        fig.savefig(
+            f"{output_path}/{model_name}_explanation_clean.png",
+            dpi=200,
+            bbox_inches="tight",
+            pad_inches=0
+        )
+
     ax0.set_title(
         f"{model_name} Explanation Map - Pred: {classifier.class_names[pred_class]}\n"
         f"Probability: {original_probs[pred_class]:.2f} - Explanation time: {explanation_time:.2f}s"
     )
-    ax0.axis("off")
 
-    # Colorbar trên axes riêng → không ảnh hưởng kích thước ax1
-    fig.colorbar(hm, cax=cax)
+    # # Colorbar trên axes riêng → không ảnh hưởng kích thước ax1
+    # fig.colorbar(hm, cax=cax)
     
-    ax1.imshow(perturbed_img, alpha=1.0)
-    ax1.set_title(f"Perturbed Image - Pred: {classifier.class_names[new_class]}\n"
-                    f"Probability of {classifier.class_names[pred_class]} class: {torch.softmax(outputs, dim=1)[0][pred_class]:.2f}")
-    ax1.axis("off")
+    # ax1.imshow(perturbed_img, alpha=1.0)
+    # ax1.set_title(f"Perturbed Image - Pred: {classifier.class_names[new_class]}\n"
+    #                 f"Probability of {classifier.class_names[pred_class]} class: {torch.softmax(outputs, dim=1)[0][pred_class]:.2f}")
+    # ax1.axis("off")
 
     plt.tight_layout()
 
     if output_path:
         plt.savefig(f"{output_path}/{model_name}_explanation.png", dpi=200, bbox_inches="tight")
 
+    fig.colorbar(hm, ax=ax0, fraction=0.046, pad=0.04)
     plt.show()
     plt.close(fig)
 
