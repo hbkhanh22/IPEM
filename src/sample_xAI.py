@@ -2,11 +2,9 @@ import numpy as np
 import torch
 import matplotlib.pyplot as plt
 from pathlib import Path
-from skimage.transform import resize
 from torchvision import transforms
 from PIL import Image
 from ipem_explainer import IPEMExplainer
-# from ipem_improved import IPEMImprovedExplainer
 from rise_explainer import RISE
 from lime import lime_image
 import shap
@@ -15,12 +13,18 @@ from utils import predict_with_model
 import torch.nn as nn
 from pytorch_grad_cam import GradCAM
 from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
-import torch.nn.functional as F
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def renormalize_image(img):
+    """Normalize an image or heatmap to the 8-bit range used for visualization and file export.
+    
+    Args:
+        img: Image or heatmap array to normalize.
+    
+    Return:
+        np.ndarray | None: Uint8 image when input is valid, otherwise None.
+    """
     if img is None:
         return None
     img_norm = cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX)
@@ -28,7 +32,19 @@ def renormalize_image(img):
     return img_uint8
 
 def explain_with_lime(clf, img_np, class_names, output_dir, args_dataset, org_img):
-    """Giải thích bằng LIME"""
+    """Generate a LIME explanation, convert it into a dense heatmap, and save the visualization outputs.
+    
+    Args:
+        clf: Classifier object that owns the trained model.
+        img_np: Input image as a NumPy array in HWC format.
+        class_names: Ordered list of class names.
+        output_dir: Base directory used to store artifacts.
+        args_dataset: Dataset name used to organize output folders.
+        org_img: Original image used for visualization.
+    
+    Return:
+        tuple: The raw LIME explanation object and its normalized continuous heatmap.
+    """
     start_time = time.time()
     if output_dir:
         output_dir = f"{output_dir}/{args_dataset}"
@@ -40,7 +56,14 @@ def explain_with_lime(clf, img_np, class_names, output_dir, args_dataset, org_im
     print(f"   - Output dir: {output_dir}")
     
     def predict_proba_fn(imgs):
-        """Hàm dự đoán cho LIME"""
+        """Convert LIME image samples into class probabilities using the classifier model.
+        
+        Args:
+            imgs: Batch of perturbed images produced by LIME.
+        
+        Return:
+            np.ndarray: Predicted class probabilities for the provided images.
+        """
         device = next(clf.model.parameters()).device
         
         if imgs.ndim == 3:
@@ -66,27 +89,27 @@ def explain_with_lime(clf, img_np, class_names, output_dir, args_dataset, org_im
     pred_class = np.argmax(predict_proba_fn(np.array([img_np])))
     original_probs = predict_proba_fn(np.array([img_np]))[0]
 
-    # ── Tạo continuous heatmap từ superpixel weights ──────────────────────────
-    # Segments: mỗi pixel mang id của superpixel nó thuộc về
+    # -- Build a continuous heatmap from superpixel weights -------------------------
+    # Each pixel stores the id of the superpixel it belongs to
     segments = explanation.segments                          # shape (H, W), int
 
     # local_exp[pred_class] = list of (segment_id, weight)
     seg_weight_dict = dict(explanation.local_exp[pred_class])
 
-    # Khởi tạo heatmap rỗng, chỉ gán weight cho các segment có trong dict
+    # Initialize an empty heatmap and assign weights only to segments in the dictionary
     heatmap_raw = np.zeros(segments.shape, dtype=np.float32)
     for seg_id, weight in seg_weight_dict.items():
         heatmap_raw[segments == seg_id] = weight
 
-    # Giữ lại phần đóng góp dương (tương tự positive_only=True)
+    # Keep only positive contributions, similar to positive_only=True
     heatmap_pos = np.maximum(heatmap_raw, 0)
 
-    # Normalize về [0, 1]
+    # Normalize to the [0, 1] range
     max_val = heatmap_pos.max()
     if max_val > 0:
         heatmap_continuous = heatmap_pos / max_val
     else:
-        heatmap_continuous = heatmap_pos          # toàn 0, tránh chia 0
+        heatmap_continuous = heatmap_pos          # all zeros, which avoids division by zero
     # ─────────────────────────────────────────────────────────────────────────
 
     end_time = time.time()
@@ -104,95 +127,20 @@ def explain_with_lime(clf, img_np, class_names, output_dir, args_dataset, org_im
     )
     return explanation, heatmap_continuous
 
-def explain_with_shap(clf, img_tensor, class_names, output_dir, args_dataset, org_img, batch_size=8):
-    print("🔍 Đang chạy SHAP...")
-    start_time = time.time()
-    if output_dir:
-        output_dir = f"{output_dir}/{args_dataset}"
-
-    device = next(clf.model.parameters()).device
-
-    # ✅ FIX 1: Dùng blurred image làm background thay vì zeros
-    import torchvision.transforms.functional as TF
-    img_squeezed = img_tensor.squeeze(0)  # (C, H, W)
-    blurred_bg = TF.gaussian_blur(img_squeezed, kernel_size=51, sigma=10.0)
-
-    # Tạo n background đa dạng để ổn định SHAP
-    n_bg = 20
-    noise_scale = 0.05
-    backgrounds = torch.stack([
-        blurred_bg + noise_scale * torch.randn_like(blurred_bg)
-        for _ in range(n_bg)
-    ]).to(device)  # (20, C, H, W)
-
-    explainer = shap.GradientExplainer(clf.model, backgrounds, batch_size=batch_size)
-    shap_values = explainer.shap_values(img_tensor.to(device))
-
-    # Xử lý shap_values
-    if isinstance(shap_values, list):
-        shap_array = np.array([
-            sv.detach().cpu().numpy() if torch.is_tensor(sv) else sv
-            for sv in shap_values
-        ])
-    else:
-        shap_array = shap_values
-
-    pred_class, _, original_probs = predict_with_model(clf.model, img_tensor)
-    org_img_np = np.array(org_img)
-
-    if shap_array.ndim == 5 and shap_array.shape[0] > 1:
-        class_shap = shap_array[pred_class, 0]       # (C, H, W)
-    elif shap_array.ndim == 5 and shap_array.shape[0] == 1:
-        class_shap = shap_array[0, :, :, :, pred_class]
-    else:
-        raise ValueError(f"Unsupported SHAP shape: {shap_array.shape}")
-
-    # ✅ FIX 2: Dùng absolute SHAP + channel max thay vì weighted sum
-    # Cách A: Absolute mean across channels (highlight mọi vùng ảnh hưởng)
-    shap_abs = np.abs(class_shap)                    # (C, H, W)
-    heatmap = shap_abs.max(axis=0)                   # (H, W) — dùng max thay mean
-
-    # ✅ FIX 3: Chỉ giữ top-k% vùng quan trọng nhất (loại bỏ nhiễu nền)
-    threshold = np.percentile(heatmap, 80)           # Chỉ giữ top 20%
-    heatmap = np.where(heatmap >= threshold, heatmap, 0)
-
-    # Resize
-    heatmap_resized = resize(
-        heatmap,
-        (org_img_np.shape[0], org_img_np.shape[1]),
-        preserve_range=True
-    )
-
-    # ✅ FIX 4: Giảm sigma smoothing để giữ biên rõ hơn
-    from scipy.ndimage import gaussian_filter
-    heatmap_smooth = gaussian_filter(heatmap_resized, sigma=2)  # sigma nhỏ hơn
-
-    # Normalize [0, 1]
-    heatmap_smooth -= heatmap_smooth.min()
-    heatmap_smooth /= (heatmap_smooth.max() + 1e-8)
-
-    # ✅ FIX 5: Tăng contrast bằng power transform
-    heatmap_smooth = np.power(heatmap_smooth, 0.5)   # sqrt làm nổi bật vùng cao
-
-    output_path = Path(output_dir) / "shap"
-    output_path.mkdir(parents=True, exist_ok=True)
-
-    end_time = time.time()
-    explanation_time = end_time - start_time
-    visualize_counterfactual_explanation(
-        classifier=clf,
-        org_img=org_img,
-        heatmap=heatmap_smooth,
-        model_name="SHAP",
-        pred_class=pred_class,
-        original_probs=original_probs,
-        output_path=output_path,
-        explanation_time=explanation_time
-    )
-    return shap_values, heatmap_smooth
-
 def explain_with_ipem(clf, img_tensor, class_names, output_dir, args_dataset, org_img):
-    """Giải thích bằng IPEM với visualization tương tự SHAP"""
+    """Generate an IPEM explanation and render the resulting counterfactual-style visualization.
+    
+    Args:
+        clf: Classifier object that owns the trained model.
+        img_tensor: Input image tensor prepared for the model.
+        class_names: Ordered list of class names.
+        output_dir: Base directory used to store artifacts.
+        args_dataset: Dataset name used to organize output folders.
+        org_img: Original image used for visualization.
+    
+    Return:
+        np.ndarray: IPEM heatmap for the input image.
+    """
     print("🔍 Đang chạy IPEM...")
     start_time = time.time() 
     if output_dir:
@@ -201,8 +149,7 @@ def explain_with_ipem(clf, img_tensor, class_names, output_dir, args_dataset, or
         output_path.mkdir(parents=True, exist_ok=True)
 
     ipem = IPEMExplainer(clf.model, class_names)
-    # heatmap, pred_class = ipem.explain(img_tensor.squeeze(0))
-    heatmap, pred_class = ipem.explain_by_watershed(img_tensor.squeeze(0))
+    heatmap = ipem.explain_by_watershed(img_tensor.squeeze(0))
     end_time = time.time()
     explanation_time = end_time - start_time
     # save_path = output_path / "ipem_explanation.png"
@@ -221,6 +168,19 @@ def explain_with_ipem(clf, img_tensor, class_names, output_dir, args_dataset, or
 
 
 def explain_with_gradcam(clf, img_tensor, class_names, output_dir, args_dataset, org_img):
+    """Generate a GradCAM explanation for the current prediction and save the visualization outputs.
+    
+    Args:
+        clf: Classifier object that owns the trained model.
+        img_tensor: Input image tensor prepared for the model.
+        class_names: Ordered list of class names.
+        output_dir: Base directory used to store artifacts.
+        args_dataset: Dataset name used to organize output folders.
+        org_img: Original image used for visualization.
+    
+    Return:
+        np.ndarray: GradCAM heatmap for the selected target class.
+    """
     start_time = time.time()
     print("🔍 Đang chạy GradCAM...")
     if output_dir:
@@ -229,9 +189,13 @@ def explain_with_gradcam(clf, img_tensor, class_names, output_dir, args_dataset,
         output_path.mkdir(parents=True, exist_ok=True)
     
     def get_last_conv_layer(model):
-        """
-        Trả về module Conv2d cuối + reference layer
-        Dùng cho pytorch-grad-cam.
+        """Locate the final convolutional layer required by GradCAM.
+        
+        Args:
+            model: Model whose modules are inspected.
+        
+        Return:
+            nn.Module: Last convolutional layer found in the model.
         """
         last_conv = None
         for name, module in model.named_modules():
@@ -269,6 +233,19 @@ def explain_with_gradcam(clf, img_tensor, class_names, output_dir, args_dataset,
 
 
 def explain_with_rise(clf, img_tensor, class_names, output_dir, args_dataset, org_img):
+    """Generate a RISE explanation, select the predicted class heatmap, and save the visualization outputs.
+    
+    Args:
+        clf: Classifier object that owns the trained model.
+        img_tensor: Input image tensor prepared for the model.
+        class_names: Ordered list of class names.
+        output_dir: Base directory used to store artifacts.
+        args_dataset: Dataset name used to organize output folders.
+        org_img: Original image used for visualization.
+    
+    Return:
+        np.ndarray: RISE heatmap for the predicted class.
+    """
     start_time = time.time()
     print("🔍 Đang chạy RISE...")
     if output_dir:
@@ -279,10 +256,10 @@ def explain_with_rise(clf, img_tensor, class_names, output_dir, args_dataset, or
     rise_explainer = RISE(model=clf.model, n_masks=10000, p=0.5, input_size=(224, 224), initial_mask_size=(7,7), n_batch=64, mask_path=None)
     heatmap_tensor = rise_explainer.explain(img_tensor)
     
-    # Lấy thông tin dự đoán để chọn đúng heatmap của class đó
+    # Get the prediction details to select the heatmap of the predicted class
     pred_class, _, original_probs = predict_with_model(clf.model, img_tensor)
     
-    # Chuyển đổi tensor sang NumPy array kích thước (H, W)
+    # Convert the tensor to a NumPy array with shape (H, W)
     heatmap = heatmap_tensor[pred_class].cpu().numpy()
     
     end_time = time.time()
@@ -300,6 +277,24 @@ def explain_with_rise(clf, img_tensor, class_names, output_dir, args_dataset, or
     return heatmap
 
 def visualize_counterfactual_explanation(classifier, org_img, heatmap, model_name, pred_class, original_probs, output_path=None, explanation_time=None, percentile_threshold=50, alpha=0.5, cmap='jet'):
+    """Overlay an explanation heatmap on the original image and save the visualization artifacts.
+    
+    Args:
+        classifier: Classifier wrapper that provides the model and class names.
+        org_img: Original image used as the visualization background.
+        heatmap: Explanation heatmap to overlay.
+        model_name: Name of the explanation method being visualized.
+        pred_class: Predicted class index for the original image.
+        original_probs: Probability vector predicted for the original image.
+        output_path: Optional directory used to save generated figures.
+        explanation_time: Optional explanation runtime in seconds.
+        percentile_threshold: Threshold parameter reserved for advanced filtering.
+        alpha: Opacity used for the heatmap overlay.
+        cmap: Matplotlib colormap name used to render the heatmap.
+    
+    Return:
+        None.
+    """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     if not isinstance(org_img, np.ndarray):
@@ -327,20 +322,20 @@ def visualize_counterfactual_explanation(classifier, org_img, heatmap, model_nam
         outputs = classifier.model(perturbed_tensor)
         new_class = torch.argmax(outputs, dim=1).item()
 
-    # Dùng gridspec: 2 cột ảnh bằng nhau + 1 cột nhỏ cho colorbar
+    # Use gridspec with two equally sized image columns and one narrow colorbar column
     fig, ax0 = plt.subplots(figsize=(15, 6))
     # gs = fig.add_gridspec(
     #     1, 3,
-    #     width_ratios=[1, 0.03, 1],  # 2 ảnh bằng nhau, cột thứ 3 cho colorbar
+    #     width_ratios=[1, 0.03, 1],  # two equal image columns and one colorbar column
     #     wspace=0.01
     # )
 
     # ax0 = fig.add_subplot(gs[0])
-    # cax = fig.add_subplot(gs[1])  # axes riêng cho colorbar
+    # cax = fig.add_subplot(gs[1])  # dedicated axes for the colorbar
     # ax1 = fig.add_subplot(gs[2])
-    # cax = fig.add_subplot(gs[2])  # axes riêng cho colorbar
+    # cax = fig.add_subplot(gs[2])  # dedicated axes for the colorbar
 
-    # # Ảnh gốc
+    # # Original image
     # ax0.imshow(org_img)
     # ax0.set_title("Original Image")
     # ax0.axis("off")
@@ -363,7 +358,7 @@ def visualize_counterfactual_explanation(classifier, org_img, heatmap, model_nam
         f"Probability: {original_probs[pred_class]:.2f} - Explanation time: {explanation_time:.2f}s"
     )
 
-    # # Colorbar trên axes riêng → không ảnh hưởng kích thước ax1
+    # # Place the colorbar on dedicated axes so it does not affect ax1 size
     # fig.colorbar(hm, cax=cax)
     
     # ax1.imshow(perturbed_img, alpha=1.0)
@@ -381,15 +376,23 @@ def visualize_counterfactual_explanation(classifier, org_img, heatmap, model_nam
     plt.close(fig)
 
 def make_perturbation(img, mode='blur', ksize=(11, 11), sigma=50):
-    """
-    Tạo nhiễu ảnh bằng các phương pháp khác nhau
+    """Apply a perturbation strategy to an image for AOPC-style faithfulness analysis.
+    
+    Args:
+        img: Image region to perturb.
+        mode: Perturbation strategy such as blur, noise, zero, or mean.
+        ksize: Gaussian kernel size used when blur mode is selected.
+        sigma: Gaussian standard deviation used for blur mode.
+    
+    Return:
+        np.ndarray: Perturbed image.
     """
     if mode == 'blur':
-        # Kiểm tra để đảm bảo kernel không lớn hơn block
-        k_h = min(ksize[0], img.shape[0] | 1)  # |1 để đảm bảo lẻ
+        # Ensure the kernel is not larger than the block
+        k_h = min(ksize[0], img.shape[0] | 1)  # |1 ensures the kernel size remains odd
         k_w = min(ksize[1], img.shape[1] | 1)
 
-        # Áp dụng Gaussian blur
+        # Apply Gaussian blur
         blurred = cv2.GaussianBlur(img, (k_w, k_h), sigma)
 
         return blurred
@@ -404,6 +407,22 @@ def make_perturbation(img, mode='blur', ksize=(11, 11), sigma=50):
         return img
 
 def AOPC_MoRF(clf, img_map_path, img_path, mode='blur', block_size=8, block_per_row=28, percentile=None, img_size=224, verbose=False):
+    """Compute an AOPC MoRF curve by progressively perturbing the most relevant image blocks.
+    
+    Args:
+        clf: Classifier object that owns the trained model.
+        img_map_path: Path to the explanation heatmap image.
+        img_path: Path to the original image.
+        mode: Perturbation strategy applied to selected blocks.
+        block_size: Side length of each square perturbation block.
+        block_per_row: Number of blocks contained in each image row.
+        percentile: Optional cumulative importance threshold used to stop early.
+        img_size: Spatial size used to resize inputs before evaluation.
+        verbose: Whether to print detailed progress information.
+    
+    Return:
+        tuple: Original class index, AOPC curve values, and mean AOPC score.
+    """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     total_AOPC = None
     pct = -1 if percentile is None else percentile
@@ -427,7 +446,7 @@ def AOPC_MoRF(clf, img_map_path, img_path, mode='blur', block_size=8, block_per_
     img_pred = np.float32(img_pred) / 255.0
     img_pred_aopc = img_pred.copy()
     # print(img_pred_aopc.shape)
-    # Nếu ảnh đang là float (0–1), cần scale lại 0–255 để tạo PIL Image
+    # If the image is in float format (0-1), rescale it to 0-255 before creating a PIL image
     img_pred_pil = Image.fromarray((img_pred * 255).astype(np.uint8))
 
     # img_pred_aopc = img_pred.copy()
@@ -498,28 +517,32 @@ def AOPC_MoRF(clf, img_map_path, img_path, mode='blur', block_size=8, block_per_
     return total_AOPC
 
 def insertion_deletion_score(model, img_tensor, heatmap, target_class, steps=20, mode="insertion"):
-    """
-    Tính Insertion/Deletion score cho một ảnh và heatmap.
-    - img_tensor: torch.Tensor, shape (C,H,W) or (1,C,H,W), ảnh gốc.
-    - heatmap: numpy array, shape (H,W) or (H,W,C), heatmap giải thích.
-    - target_class: int, lớp mục tiêu để theo dõi xác suất.
-    - steps: số bước perturbation.
-    - mode: "insertion" hoặc "deletion".
-    Trả về AUC score.
+    """Compute insertion or deletion faithfulness scores by revealing or removing pixels in importance order.
+    
+    Args:
+        model: Trained model used for scoring perturbed images.
+        img_tensor: Original image tensor in CHW or NCHW format.
+        heatmap: Explanation heatmap associated with the image.
+        target_class: Class index whose probability is tracked.
+        steps: Number of perturbation steps used to build the curve.
+        mode: Either insertion or deletion.
+    
+    Return:
+        tuple[float, list[float]]: AUC score and per-step probabilities.
     """
     device = next(model.parameters()).device
 
-    # Chuẩn bị transform (not used directly here but kept for compatibility)
+    # Prepare the transform for compatibility with the existing pipeline
     transform = transforms.Compose([
         transforms.Resize((img_tensor.shape[1] if img_tensor.dim() > 2 else img_tensor.shape[2], img_tensor.shape[2] if img_tensor.dim() > 2 else img_tensor.shape[1])),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
 
-    # Chuẩn bị ảnh nền (baseline = all-zero) used for both insertion and deletion
+    # Prepare the baseline image (all zeros) for both insertion and deletion
     baseline = torch.zeros_like(img_tensor).to(device)
 
-    # Chuẩn bị heatmap: validate and convert to single-channel
+    # Prepare the heatmap by validating it and converting it to a single channel
     hm = np.array(heatmap)
     if hm.size == 0:
         raise ValueError("Heatmap is empty or invalid for resizing")
@@ -557,9 +580,9 @@ def insertion_deletion_score(model, img_tensor, heatmap, target_class, steps=20,
         raise RuntimeError(f"Failed to resize heatmap: {e}")
 
     heatmap_flat = heatmap_resized.flatten()
-    indices = np.argsort(-heatmap_flat)  # sắp xếp giảm dần
+    indices = np.argsort(-heatmap_flat)  # sort in descending order
 
-    # Tính xác suất qua các bước
+    # Compute probabilities across the perturbation steps
     probs = []
     for step in range(steps + 1):
         fraction = step / steps
@@ -569,7 +592,7 @@ def insertion_deletion_score(model, img_tensor, heatmap, target_class, steps=20,
         mask[indices[:num_pixels]] = 1.0
         mask = mask.reshape(heatmap_resized.shape)
 
-        # Tạo mask tensor với dạng phù hợp để broadcast
+        # Create a mask tensor with a shape that supports broadcasting
         mask_t = torch.tensor(mask, dtype=img_tensor.dtype, device=device)
         if img_tensor.dim() == 4:
             # make shape (1,1,H,W) so it broadcasts to (1,C,H,W)
@@ -578,7 +601,7 @@ def insertion_deletion_score(model, img_tensor, heatmap, target_class, steps=20,
             # img_tensor dim==3 (C,H,W) -> make mask (1,H,W) which will broadcast across channels
             mask_t = mask_t.unsqueeze(0)
 
-        # Tạo ảnh perturbed
+        # Create the perturbed image
         if mode == "insertion":
             # start from baseline and insert pixels from original
             perturbed_img = baseline * (1 - mask_t) + img_tensor * mask_t
@@ -597,47 +620,6 @@ def insertion_deletion_score(model, img_tensor, heatmap, target_class, steps=20,
             prob = torch.softmax(output, dim=1)[0, target_class].item()
 
         probs.append(prob)
-    # Tính AUC
+    # Compute the AUC
     auc_score = np.trapezoid(probs, dx=1.0/steps)
     return auc_score, probs
-
-def explain_all_parallel(clf, img_tensor, img_np, org_img, class_names, output_dir, args_dataset):
-    """
-    Chạy tất cả các phương pháp giải thích (LIME, SHAP, IPEM, GradCAM, RISE) 
-    song song trên cùng một bức ảnh bằng ThreadPoolExecutor.
-    Trả về bộ dict chứa kết quả gốc của từng phương pháp.
-    """
-    import time
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    
-    print(f"🚀 Bắt đầu giải thích song song cho 1 ảnh (Shape: {img_tensor.shape})")
-    start_time = time.time()
-    
-    results = {}
-    
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        # Submit tất cả các tasks vào pool
-        future_to_method = {
-            executor.submit(explain_with_lime, clf, img_np, class_names, output_dir, args_dataset, org_img): "LIME",
-            # executor.submit(explain_with_shap, clf, img_tensor, class_names, output_dir, args_dataset, org_img): "SHAP",
-            executor.submit(explain_with_ipem, clf, img_tensor, class_names, output_dir, args_dataset, org_img): "IPEM",
-            executor.submit(explain_with_gradcam, clf, img_tensor, class_names, output_dir, args_dataset, org_img): "GradCAM",
-            # executor.submit(explain_with_shapcam, clf, img_tensor, class_names, output_dir, args_dataset, org_img): "ShapleyCAM",
-            executor.submit(explain_with_rise, clf, img_tensor, class_names, output_dir, args_dataset, org_img): "RISE"
-        }
-        
-        # Đợi các task hoàn thành
-        for future in as_completed(future_to_method):
-            method = future_to_method[future]
-            try:
-                # Lưu kết quả thật trả về từ mỗi explainer
-                results[method] = future.result()
-                print(f"✅ {method} đã xử lý xong.")
-            except Exception as exc:
-                results[method] = None # Gán None nếu lỗi để tránh crash code notebook
-                print(f"❌ {method} gặp lỗi: {exc}")
-                
-    end_time = time.time()
-    print(f"⏱️ Tổng thời gian chạy song song: {end_time - start_time:.2f}s")
-    return results
-

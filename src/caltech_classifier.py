@@ -1,5 +1,3 @@
-import argparse
-import json
 import os
 import random
 from pathlib import Path
@@ -34,6 +32,26 @@ class CaltechImageClassifier:
                  batch_size: int = 32, epochs: int = 10, lr: float = 1e-4, weight_decay: float = 1e-4,
                  val_split: float = 0.15, test_split: float = 0.15, patience: int = 10, num_workers: int = 4,
                  test_loader_fraction: float = 1.0):
+        """Initialize the Caltech-101 classifier with training, evaluation, and export settings.
+        
+        Args:
+            data_dir: Root directory that contains the dataset files.
+            args_model: Backbone model name to train or load.
+            output_dir: Base directory used to store checkpoints and reports.
+            img_size: Target image size applied during preprocessing.
+            batch_size: Number of samples processed in each batch.
+            epochs: Maximum number of training epochs.
+            lr: Learning rate used by the optimizer.
+            weight_decay: Weight decay applied during optimization.
+            val_split: Fraction of data reserved for validation.
+            test_split: Fraction of data reserved for testing.
+            patience: Early stopping patience measured in epochs.
+            num_workers: Number of worker processes for data loading.
+            test_loader_fraction: Fraction of the test set to keep for evaluation.
+        
+        Return:
+            None.
+        """
         self.data_dir = data_dir
         self.output_dir = Path(output_dir) / "caltech-101"
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -55,6 +73,14 @@ class CaltechImageClassifier:
         self.args_model_name = args_model.lower()
 
     def _reduce_test_dataset(self, test_ds):
+        """Reduce the test dataset to a deterministic subset when a fraction smaller than one is requested.
+        
+        Args:
+            test_ds: Dataset or subset used for test-time evaluation.
+        
+        Return:
+            Dataset: The original dataset or a reproducible subset of it.
+        """
         fraction = min(max(self.test_loader_fraction, 0.0), 1.0)
         if fraction >= 1.0 or len(test_ds) == 0:
             return test_ds
@@ -65,6 +91,14 @@ class CaltechImageClassifier:
         return Subset(test_ds, indices)
 
     def _build_dataloaders(self):
+        """Create the train, validation, and test dataloaders with the configured preprocessing pipeline.
+        
+        Args:
+            None.
+        
+        Return:
+            None.
+        """
         train_tf = transforms.Compose([
             transforms.Resize((self.img_size, self.img_size)),
             transforms.RandomHorizontalFlip(),
@@ -96,6 +130,14 @@ class CaltechImageClassifier:
         self.test_loader = DataLoader(test_ds, batch_size=self.batch_size, shuffle=False, num_workers=workers, pin_memory=pin)
 
     def _build_model(self):
+        """Build the selected backbone model and adapt its classifier head to the dataset classes.
+        
+        Args:
+            None.
+        
+        Return:
+            None.
+        """
         if self.args_model_name == "efficientnet_b3":
             model = models.efficientnet_b3(weights=models.EfficientNet_B3_Weights.IMAGENET1K_V1)
             in_feats = model.classifier[1].in_features
@@ -106,19 +148,6 @@ class CaltechImageClassifier:
             in_feats = model.fc.in_features
             model.fc = nn.Linear(in_feats, len(self.class_names))
 
-        elif self.args_model_name == "densenet121":
-            model = models.densenet121(weights=models.DenseNet121_Weights.IMAGENET1K_V1)
-            in_feats = model.classifier.in_features
-            model.classifier = nn.Linear(in_feats, len(self.class_names))
-
-        elif self.args_model_name == "mobilenet_v3":
-            model = models.mobilenet_v3_large(weights=models.MobileNet_V3_Large_Weights.IMAGENET1K_V1)
-            in_feats = model.classifier[3].in_features
-            model.classifier[3] = nn.Linear(in_feats, len(self.class_names))
-        elif self.args_model_name == "vgg19":
-            model = models.vgg19(weights=models.VGG19_Weights.IMAGENET1K_V1)
-            in_feats = model.classifier[6].in_features
-            model.classifier[6] = nn.Linear(in_feats, len(self.class_names))
         elif self.args_model_name == "transformer":
             # Vision Transformer (ViT) support (torchvision >= ~0.14). Handle multiple torchvision APIs.
             try:
@@ -156,13 +185,21 @@ class CaltechImageClassifier:
         # model.classifier[1] = nn.Linear(in_feats, len(self.class_names))
         # self.model = model.to(device)
 
-        # fine-tune tất cả tham số
+        # Fine-tune all parameters
         for p in model.parameters():
             p.requires_grad = True
 
         self.model = model.to(device)
 
     def _compute_class_weights(self):
+        """Compute balanced class weights from the training loader to reduce label imbalance.
+        
+        Args:
+            None.
+        
+        Return:
+            torch.Tensor: Class weights aligned with the dataset label order.
+        """
         labels = []
         for _, targets in self.train_loader:
             labels.extend(targets.cpu().numpy())
@@ -170,6 +207,14 @@ class CaltechImageClassifier:
         return torch.tensor(weights, dtype=torch.float32).to(device)
 
     def train(self):
+        """Train the classifier, monitor validation accuracy, and save the best checkpoint.
+        
+        Args:
+            None.
+        
+        Return:
+            None.
+        """
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self._build_dataloaders()
         self._build_model()
@@ -211,6 +256,15 @@ class CaltechImageClassifier:
                     break
 
     def evaluate(self, loader, criterion):
+        """Evaluate the current model on a dataloader and compute average loss and accuracy.
+        
+        Args:
+            loader: DataLoader that provides batches for evaluation.
+            criterion: Loss function used to compute the evaluation loss.
+        
+        Return:
+            tuple[float, float]: Average loss and accuracy for the provided loader.
+        """
         self.model.eval()
         running_loss, correct, total = 0.0, 0, 0
         with torch.no_grad():
@@ -225,8 +279,16 @@ class CaltechImageClassifier:
         return running_loss / total, correct / total
     
     def load_trained_model(self):
+        """Load the saved best checkpoint and prepare the model for inference.
+        
+        Args:
+            None.
+        
+        Return:
+            None.
+        """
         if not self.class_names:
-        # Đảm bảo đã có class_names từ dataloader
+        # Ensure class_names are initialized from the dataloaders
             self._build_dataloaders()
         if self.model is None:
             self._build_model()
@@ -239,8 +301,16 @@ class CaltechImageClassifier:
         self.model.eval()
 
     def test(self):
+        """Run evaluation on the test split, print metrics, and save the confusion matrix plot.
+        
+        Args:
+            None.
+        
+        Return:
+            None.
+        """
         self._build_dataloaders()
-        self.load_trained_model()  # đảm bảo model đã được khởi tạo + load checkpoint
+        self.load_trained_model()  # Ensure the model is initialized and the checkpoint is loaded
         all_preds, all_targets = [], []
         with torch.no_grad():
             for imgs, targets in self.test_loader:
@@ -262,6 +332,14 @@ class CaltechImageClassifier:
         self._plot_confusion_matrix(cm)
 
     def _plot_confusion_matrix(self, cm):
+        """Render and save the confusion matrix image for the latest test run.
+        
+        Args:
+            cm: Confusion matrix array produced from model predictions.
+        
+        Return:
+            None.
+        """
         fig, ax = plt.subplots(figsize=(20, 15))
         im = ax.imshow(cm)
         ax.set_xlabel('Predicted')
@@ -271,13 +349,23 @@ class CaltechImageClassifier:
         plt.close()
 
     def evaluate_model_metrics(self, targets, predicts, average='macro'):
+        """Compute classification metrics, including AUC, from predicted labels and test probabilities.
+        
+        Args:
+            targets: Ground-truth class labels.
+            predicts: Predicted class labels produced by the model.
+            average: Averaging strategy used for multi-class metrics.
+        
+        Return:
+            dict: Dictionary containing aggregated evaluation metrics.
+        """
         acc = accuracy_score(targets, predicts)
         prec = precision_score(targets, predicts, average=average, zero_division=0)
         rec = recall_score(targets, predicts, average=average, zero_division=0)
         f1 = f1_score(targets, predicts, average=average, zero_division=0)
         spec = specificity_score(targets, predicts, average=average)
 
-        # Lấy xác suất dự đoán cho toàn bộ test set
+        # Collect prediction probabilities for the entire test set
         all_probs = []
         for imgs, _ in self.test_loader:
             imgs = imgs.to(device)
@@ -286,7 +374,7 @@ class CaltechImageClassifier:
             all_probs.append(batch_probs)
         probs = np.vstack(all_probs)
 
-        # Nếu là multiclass
+        # Handle the multiclass case
         auc = roc_auc_score(targets, probs, multi_class='ovr', average=average)
 
         metrics = {
@@ -301,6 +389,14 @@ class CaltechImageClassifier:
 
     # ----------- Helper Methods -----------
     def tensor_to_np_image(self, t: torch.Tensor) -> np.ndarray:
+        """Convert a normalized image tensor back into a NumPy image in HWC format.
+        
+        Args:
+            t: Normalized image tensor with channel-first layout.
+        
+        Return:
+            np.ndarray: Image array clipped to the [0, 1] range.
+        """
         mean = np.array([0.485, 0.456, 0.406]).reshape(3, 1, 1)
         std = np.array([0.229, 0.224, 0.225]).reshape(3, 1, 1)
         x = t.detach().cpu().numpy()
@@ -310,6 +406,14 @@ class CaltechImageClassifier:
         return x
 
     def predict_proba_fn(self, imgs_np: np.ndarray) -> np.ndarray:
+        """Convert a batch of NumPy images into model probabilities for explanation methods such as LIME.
+        
+        Args:
+            imgs_np: Batch of images stored as NumPy arrays in HWC format.
+        
+        Return:
+            np.ndarray: Predicted class probabilities for each input image.
+        """
         self.model.eval()
         imgs_t = []
         mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
@@ -324,10 +428,17 @@ class CaltechImageClassifier:
         return preds
     
     def run_lime_metrics(self):
-        """Tính metrics cho LIME"""
+        """Evaluate the test set with the LIME metric suite.
+        
+        Args:
+            None.
+        
+        Return:
+            dict: Aggregated LIME evaluation metrics.
+        """
         evaluator = XAIEvaluator(self.model, self.class_names)
 
-        # lấy samples giống run_lime
+        # Collect samples in the same format used by run_lime
         samples = [
             (img, label.item())
             for imgs, labels in self.test_loader
@@ -338,16 +449,15 @@ class CaltechImageClassifier:
         print("📊 LIME metrics:", results)
         return results
 
-    def run_shap_metrics(self, batch_size=8):
-        """Tính metrics cho SHAP"""
-        evaluator = XAIEvaluator(self.model, self.class_names)
-        results = evaluator.evaluate_with_shap(self.test_loader, batch_size=batch_size)
-
-        print("📊 SHAP metrics:", results)
-        return results
-
     def run_ipem_metrics(self):
-        """Tính metrics cho IPEM"""
+        """Evaluate the test set with the IPEM metric suite.
+        
+        Args:
+            None.
+        
+        Return:
+            dict: Aggregated IPEM evaluation metrics.
+        """
         evaluator = XAIEvaluator(self.model, self.class_names)
 
         results = evaluator.evaluate_with_ipem(self.test_loader)
@@ -355,14 +465,28 @@ class CaltechImageClassifier:
         return results
 
     def run_gradcam_metrics(self):
-        """ Tính metrics cho GradCAM """
+        """Evaluate the test set with the GradCAM metric suite.
+        
+        Args:
+            None.
+        
+        Return:
+            dict: Aggregated GradCAM evaluation metrics.
+        """
         evaluator = XAIEvaluator(self.model, self.class_names)
         results = evaluator.evaluate_with_GradCAM(self.test_loader)
         print("📊 GradCAM metrics:", results)
         return results
 
     def run_rise_metrics(self):
-        """ Tính metrics cho RISE """
+        """Evaluate the test set with the RISE metric suite.
+        
+        Args:
+            None.
+        
+        Return:
+            dict: Aggregated RISE evaluation metrics.
+        """
         evaluator = XAIEvaluator(self.model, self.class_names)
         results = evaluator.evaluate_with_rise(self.test_loader)
         print("📊 RISE metrics:", results)

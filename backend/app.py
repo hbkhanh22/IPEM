@@ -134,7 +134,6 @@ def load_classifier(dataset: str, model_name: str):
     Note: do NOT put load_trained_model() inside the if/elif branches —
     that would make it dead code (unreachable after a return statement).
     """
-    from animal_classifier import AnimalImageClassifier
     from brain_tumor_classifier import BrainTumorClassifier
     from caltech_classifier import CaltechImageClassifier
 
@@ -145,9 +144,7 @@ def load_classifier(dataset: str, model_name: str):
     )
 
     # Select the right classifier class
-    if dataset == "animals":
-        clf = AnimalImageClassifier(**kwargs)
-    elif dataset == "brain-tumor":
+    if dataset == "brain-tumor":
         clf = BrainTumorClassifier(**kwargs)
     elif dataset == "caltech-101":
         clf = CaltechImageClassifier(**kwargs)
@@ -179,9 +176,9 @@ def predict():
 
     Request (multipart/form-data):
       image      : image file (JPG / PNG)
-      dataset    : 'animals' | 'brain-tumor' | 'caltech-101'
+      dataset    : 'brain-tumor' | 'caltech-101'
       model_name : 'efficientnet_b3' | 'resnet50' | 'transformer'
-      xai_method : 'lime' | 'shap' | 'gradcam' | 'rise' | 'ipem'
+      xai_method : 'lime' | 'gradcam' | 'rise' | 'ipem'
 
     Response (JSON):
       {
@@ -196,7 +193,7 @@ def predict():
             return jsonify({"error": "Missing image file"}), 400
 
         image_file = request.files["image"]
-        dataset    = request.form.get("dataset",    "animals")
+        dataset    = request.form.get("dataset",    "brain-tumor")
         model_name = request.form.get("model_name", "efficientnet_b3")
         xai_method = request.form.get("xai_method", "gradcam")
 
@@ -246,13 +243,6 @@ def predict():
             # LIME expects raw (H,W,C) float numpy, NOT ImageNet-normalized
             _, heatmap = explain_with_lime(
                 clf, img_np, class_names,
-                output_dir=tmp_dir, args_dataset="tmp", org_img=pil_resized
-            )
-
-        elif xai_method == "shap":
-            # SHAP works on the normalized tensor (1,C,H,W)
-            _, heatmap = explain_with_shap(
-                clf, img_tensor, class_names,
                 output_dir=tmp_dir, args_dataset="tmp", org_img=pil_resized
             )
 

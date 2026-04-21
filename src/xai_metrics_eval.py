@@ -2,10 +2,8 @@ import numpy as np
 import torch
 from typing import List
 from lime import lime_image
-import shap
 from ipem_explainer import IPEMExplainer  
 from rise_explainer import RISE
-from sklearn.metrics import accuracy_score
 import time
 import cv2
 from PIL import Image
@@ -17,11 +15,28 @@ from utils import _make_perturbation, vectorize_explanation, predict_proba_fn
 
 class XAIEvaluator:
     def __init__(self, model: torch.nn.Module, class_names: List[str]):
+        """Initialize the XAI evaluator with a trained model and its class labels.
+        
+        Args:
+            model: Trained PyTorch model used for explanation and scoring.
+            class_names: Ordered list of class labels.
+        
+        Return:
+            None.
+        """
         self.model = model.eval()   
         self.class_names = class_names
 
     @staticmethod
     def _synchronize_device(device: torch.device):
+        """Synchronize the active accelerator device so runtime measurements remain accurate.
+        
+        Args:
+            device: Torch device to synchronize.
+        
+        Return:
+            None.
+        """
         if device.type == "cuda":
             torch.cuda.synchronize(device)
         elif device.type == "mps" and hasattr(torch, "mps"):
@@ -31,15 +46,18 @@ class XAIEvaluator:
                 pass
 
     # =====================================================================
-    # --------- CÁC ĐỘ ĐO ĐÁNH GIÁ CHUNG (ĐÃ CHỈNH SỬA & BỔ SUNG) ---------
+    # --------- Shared explanation evaluation metrics ---------
     # =====================================================================
 
     @staticmethod
     def gini_sparsity(heatmap):
-        """
-        [MỚI] Bổ sung độ đo Gini Sparsity.
-        Tính độ thưa (Sparsity) theo chỉ số Gini. 
-        Gini càng gần 1.0 nghĩa là Saliency Map càng thưa, tập trung vào số ít pixel quan trọng (dễ hiểu).
+        """Measure explanation sparsity with the Gini coefficient.
+        
+        Args:
+            heatmap: Explanation map whose sparsity is being measured.
+        
+        Return:
+            float: Gini sparsity score for the provided heatmap.
         """
         h = np.abs(np.array(heatmap).flatten())
         if np.sum(h) == 0:
@@ -52,11 +70,18 @@ class XAIEvaluator:
 
     @staticmethod
     def insertion_deletion_score(model, img_tensor, heatmap, target_class, steps=20, mode="insertion"):
-        """
-        [MỚI] Tích hợp từ file Notebook.
-        Tính Insertion/Deletion score (Faithfulness) cho một ảnh và heatmap.
-        - Deletion: Loại bỏ pixel quan trọng dần -> Xác suất tụt -> Trả về Area Under Curve (Càng thấp càng tốt).
-        - Insertion: Đưa vào pixel quan trọng dần -> Xác suất tăng -> Trả về Area Under Curve (Càng cao càng tốt).
+        """Measure explanation faithfulness with insertion or deletion perturbation curves.
+        
+        Args:
+            model: Trained model used to score perturbed inputs.
+            img_tensor: Original image tensor in CHW or NCHW format.
+            heatmap: Explanation heatmap associated with the image.
+            target_class: Class index whose confidence is tracked.
+            steps: Number of perturbation steps used to build the curve.
+            mode: Either insertion or deletion.
+        
+        Return:
+            float: Area under the insertion or deletion curve.
         """
         device = next(model.parameters()).device
         img_tensor = img_tensor.to(device)
@@ -89,7 +114,7 @@ class XAIEvaluator:
         heatmap_resized = cv2.resize((hm * 255).astype(np.uint8), (target_w, target_h), interpolation=cv2.INTER_LINEAR).astype(np.float32) / 255.0
         
         heatmap_flat = heatmap_resized.flatten()
-        indices = np.argsort(-heatmap_flat)  # Sắp xếp giảm dần
+        indices = np.argsort(-heatmap_flat)  # Sort in descending order
 
         probs = []
         for step in range(steps + 1):
@@ -124,7 +149,15 @@ class XAIEvaluator:
 
     @staticmethod
     def average_drop_increase(original_probs, masked_probs):
-        """Giữ nguyên từ bản gốc: Tính Average Drop và Increase Rate."""
+        """Compute Average Drop and Increase Rate from original and masked prediction scores.
+        
+        Args:
+            original_probs: Confidence values predicted for the original inputs.
+            masked_probs: Confidence values predicted for the masked inputs.
+        
+        Return:
+            tuple[float, float]: Average drop percentage and increase rate percentage.
+        """
         original_probs = np.array(original_probs)
         masked_probs = np.array(masked_probs)
 
@@ -138,7 +171,20 @@ class XAIEvaluator:
     
     # --------- AOPC MoRF ----------
     def _compute_single_aopc(self, img_tensor, explanation, original_class, original_prob, block_size=8, percentile=None, verbose=False):
-        """Giữ nguyên chuẩn logic AOPC của bạn."""
+        """Compute the AOPC MoRF score for a single explanation map and image.
+        
+        Args:
+            img_tensor: Original image tensor or image array.
+            explanation: Explanation heatmap used to rank image regions.
+            original_class: Predicted class index before perturbation.
+            original_prob: Class probability vector for the original image.
+            block_size: Side length of each perturbation block.
+            percentile: Optional cumulative importance threshold used to stop early.
+            verbose: Whether to print intermediate progress information.
+        
+        Return:
+            tuple: Original class index, AOPC curve values, and mean AOPC score.
+        """
         device = next(self.model.parameters()).device
         
         if isinstance(img_tensor, torch.Tensor):
@@ -212,11 +258,24 @@ class XAIEvaluator:
 
 
     # =====================================================================
-    # --------- ÁP DỤNG CÁC ĐỘ ĐO CHO 4 PHƯƠNG PHÁP XAI CHUẨN MỰC ---------
+    # --------- Apply the metrics to the four XAI methods ---------
     # =====================================================================
 
     # --------- LIME ----------
     def evaluate_with_lime(self, samples, num_samples=1000, compute_aopc=True, block_size=8, percentile=None, noise_sigma=0.02):
+        """Evaluate LIME explanations across the provided samples and aggregate multiple faithfulness metrics.
+        
+        Args:
+            samples: Iterable of image tensors and labels used for evaluation.
+            num_samples: Number of perturbation samples requested from LIME.
+            compute_aopc: Whether to compute AOPC-based metrics.
+            block_size: Block size used for AOPC perturbations.
+            percentile: Optional cumulative importance threshold used in AOPC.
+            noise_sigma: Noise level used for local stability estimation.
+        
+        Return:
+            dict: Aggregated LIME evaluation metrics.
+        """
         device = next(self.model.parameters()).device
         explainer = lime_image.LimeImageExplainer()
 
@@ -274,12 +333,12 @@ class XAIEvaluator:
                 )
                 all_aopc_scores.append(mean_AOPC)
         
-        # [MỚI] Local Stability - Chọn ngẫu nhiên 1 ảnh (tránh mất nhiều 1000 iter của LIME)
+        # Local Stability: pick one sample to avoid repeating the full LIME cost for many iterations
         stability_val = 0.0
         if len(samples) > 0:
-            img_t, _ = samples[0] # lấy đại 1 ảnh
+            img_t, _ = samples[0] # take one sample
             if img_t.dim() == 2: img_t = img_t.unsqueeze(0)
-            # Tạo nhiễu nhỏ trong tập
+            # Create a lightly perturbed version of the sample
             img_noisy = (img_t + torch.randn_like(img_t) * noise_sigma).clamp(-5.0, 5.0)
             img_np_noisy = img_noisy.permute(1,2,0).cpu().numpy()
             
@@ -317,134 +376,20 @@ class XAIEvaluator:
             except Exception: pass
         return results
 
-    # --------- SHAP ----------
-    def evaluate_with_shap(self, loader, batch_size: int = 8, noise_sigma: float = 0.02, large_mask_prob: float = 0.2, 
-                          compute_aopc=True, block_size=8, percentile=None):
-        device = next(self.model.parameters()).device
-        imgs, _ = next(iter(loader))
-        imgs = imgs.to(device)
-        N = imgs.shape[0]
-
-        bg = imgs[:2].to(device)
-        explainer = shap.GradientExplainer(self.model, batch_size=batch_size, data=bg)
-        self._synchronize_device(device)
-        explanation_start = time.perf_counter()
-        raw_shap = explainer.shap_values(imgs)
-        self._synchronize_device(device)
-        avg_explanation_time = (time.perf_counter() - explanation_start) / max(N, 1)
-        
-        def to_shap_per_class_array(svalues):
-            if isinstance(svalues, list): return np.stack([sv.detach().cpu().numpy() if torch.is_tensor(sv) else sv for sv in svalues], axis=0)
-            elif isinstance(svalues, (np.ndarray, torch.Tensor)):
-                if torch.is_tensor(svalues): svalues = svalues.detach().cpu().numpy()
-                if svalues.ndim == 5:
-                    n_classes = len(self.class_names)
-                    if svalues.shape[0] == n_classes: return svalues
-                    elif svalues.shape[-1] == n_classes: return np.transpose(svalues, (4, 0, 1, 2, 3))
-                    elif svalues.shape[-1] > 1 and svalues.shape[0] != svalues.shape[-1]: return np.transpose(svalues, (4, 0, 1, 2, 3))
-                    else: raise ValueError(f"Ambiguous SHAP shape")
-                elif svalues.ndim == 4: return svalues[None, ...]
-                else: raise ValueError("Unsupported SHAP ndim")
-            else: raise TypeError("Unsupported SHAP type")
-        
-        shap_per_class = to_shap_per_class_array(raw_shap)
-        num_classes = shap_per_class.shape[0]
-
-        with torch.no_grad():
-            y_model_logits = self.model(imgs)
-            y_model_probs = torch.softmax(y_model_logits, dim=1).cpu().numpy()
-            y_model = np.argmax(y_model_probs, axis=1)
-            expected_value = self.model(bg).mean(0).cpu().numpy() if bg.shape[0] > 0 else np.zeros((num_classes,), dtype=float)
-
-        y_local_logits = np.zeros_like(y_model_probs)
-        for c in range(num_classes):
-            arr = shap_per_class[c]
-            contrib = arr.reshape(N, -1).sum(axis=1)
-            y_local_logits[:, c] = expected_value[c] + contrib
-
-        y_local_probs = np.exp(y_local_logits) / np.exp(y_local_logits).sum(axis=1, keepdims=True)
-        y_local = np.argmax(y_local_probs, axis=1)
-
-        heatmaps = []
-        for i in range(N):
-            heatmaps.append(np.abs(shap_per_class[int(y_model[i])][i]).sum(axis=0))
-            
-        expl_vecs = [vectorize_explanation(h) for h in heatmaps]
-        
-        # Stability: recompute SHAP on slightly noised images
-        imgs_noisy = (imgs + torch.randn_like(imgs) * noise_sigma).clamp(-5.0, 5.0)
-        subset = torch.randperm(N)[: max(1, N // 10)]
-        raw_shap_noisy = explainer.shap_values(imgs_noisy[subset])
-        shap_noisy_per_class = to_shap_per_class_array(raw_shap_noisy)
-
-        with torch.no_grad(): y_model_sub = np.argmax(torch.softmax(self.model(imgs_noisy[subset]), dim=1).cpu().numpy(), axis=1)
-        heatmaps_noisy = np.abs(shap_noisy_per_class[y_model_sub, np.arange(len(subset))]).sum(axis=1)
-        vecs_noisy = [vectorize_explanation(h) for h in heatmaps_noisy]
-        expl_vecs_sub = [expl_vecs[i] for i in subset.cpu().numpy()]
-        stability_val = float(np.mean([np.linalg.norm(a - b) for a, b in zip(expl_vecs_sub, vecs_noisy)]))
-        
-        # Robustness
-        mask = (torch.rand_like(imgs[:, :1, :, :]) > (1.0 - large_mask_prob)).float().to(device)
-        imgs_largep = imgs * (1.0 - mask)
-        raw_shap_largep = explainer.shap_values(imgs_largep[subset])
-        shap_largep_per_class = to_shap_per_class_array(raw_shap_largep)
-        with torch.no_grad(): y_model_sub_large = np.argmax(torch.softmax(self.model(imgs_largep[subset]), dim=1).cpu().numpy(), axis=1)
-        heatmaps_largep = np.abs(shap_largep_per_class[y_model_sub_large, np.arange(len(subset))]).sum(axis=1)
-        vecs_largep = [vectorize_explanation(h) for h in heatmaps_largep]
-        robustness_val = float(np.mean([np.linalg.norm(a - b) for a, b in zip(expl_vecs_sub, vecs_largep)]))
-
-        # Khai báo biến mảng 
-        all_aopc_scores = []
-        shap_orig_probs, shap_masked_probs = [], []
-        all_gini, all_insertion, all_deletion = [], [], []
-
-        for i in range(N):
-            heat = heatmaps[i]
-            img_tensor = imgs[i]
-            orig_class = int(y_model[i])
-            
-            # GINI Sparsity
-            all_gini.append(self.gini_sparsity(heat))
-            
-            # Insertion / Deletion AUC
-            all_insertion.append(self.insertion_deletion_score(self.model, img_tensor, heat, orig_class, steps=20, mode="insertion"))
-            all_deletion.append(self.insertion_deletion_score(self.model, img_tensor, heat, orig_class, steps=20, mode="deletion"))
-
-            if compute_aopc:    
-                try:
-                    bin_mask = (heat > np.mean(heat)).astype(np.float32)
-                    img_t = img_tensor.unsqueeze(0)
-                    mask_t = torch.from_numpy(bin_mask).to(device).unsqueeze(0).unsqueeze(0)
-                    mask_t = mask_t.expand(1, img_t.shape[1], bin_mask.shape[0], bin_mask.shape[1])
-                    with torch.no_grad():
-                        masked_prob = torch.softmax(self.model(img_t * mask_t), dim=1)[0, orig_class].item()
-                    shap_orig_probs.append(float(y_model_probs[i][orig_class]))
-                    shap_masked_probs.append(float(masked_prob))
-                except Exception: pass
-
-                _, _, mean_AOPC = self._compute_single_aopc(img_tensor, heat, orig_class, torch.tensor(y_model_probs[i], device=device), block_size=block_size, percentile=percentile)
-                all_aopc_scores.append(mean_AOPC)
-
-        results = {
-            "SHAP_Time": float(avg_explanation_time),
-            "SHAP_Fidelity_Accuracy": float(accuracy_score(y_model, y_local)),
-            "SHAP_Gini_Sparsity": float(np.mean(all_gini)) if all_gini else 0.0,
-            "SHAP_Insertion_AUC": float(np.mean(all_insertion)) if all_insertion else 0.0,
-            "SHAP_Deletion_AUC": float(np.mean(all_deletion)) if all_deletion else 0.0,
-            "SHAP_Local_Stability_L2": float(stability_val),
-            "SHAP_Robustness_LargeMask_L2": float(robustness_val),
-        }
-        if compute_aopc and len(all_aopc_scores) > 0: results["SHAP_AOPC_Mean"] = float(np.mean(all_aopc_scores))
-        if len(shap_orig_probs) > 0:
-            try:
-                avg_drop, inc_rate = self.average_drop_increase(shap_orig_probs, shap_masked_probs)
-                results["SHAP_AvgDrop"] = float(avg_drop)
-                results["SHAP_IncreaseRate"] = float(inc_rate)
-            except Exception: pass
-        return results
-
     # --------- IPEM ----------
     def evaluate_with_ipem(self, loader, compute_aopc=True, block_size=8, percentile=None, noise_sigma=0.02):
+        """Evaluate IPEM explanations on a dataloader and aggregate multiple explanation quality metrics.
+        
+        Args:
+            loader: DataLoader that supplies evaluation batches.
+            compute_aopc: Whether to compute AOPC-based metrics.
+            block_size: Block size used for AOPC perturbations.
+            percentile: Optional cumulative importance threshold used in AOPC.
+            noise_sigma: Noise level used for local stability estimation.
+        
+        Return:
+            dict: Aggregated IPEM evaluation metrics.
+        """
         ipem = IPEMExplainer(self.model, self.class_names)
         device = next(self.model.parameters()).device
         
@@ -462,8 +407,7 @@ class XAIEvaluator:
                 img_t = imgs[i]
                 self._synchronize_device(device)
                 explanation_start = time.perf_counter()
-                # heat, pred_from_importance = ipem.explain(img_t.to(device))
-                heat, pred_from_importance = ipem.explain_by_watershed(img_t.to(device))
+                heat = ipem.explain_by_watershed(img_t.to(device))
                 self._synchronize_device(device)
                 explanation_times.append(time.perf_counter() - explanation_start)
                 heat_abs = np.abs(heat)
@@ -519,7 +463,27 @@ class XAIEvaluator:
 
     # --------- GradCAM ----------
     def evaluate_with_GradCAM(self, loader, compute_aopc=True, block_size=8, percentile=None, noise_sigma=0.02):
+        """Evaluate GradCAM explanations on a dataloader and aggregate explanation quality metrics.
+        
+        Args:
+            loader: DataLoader that supplies evaluation batches.
+            compute_aopc: Whether to compute AOPC-based metrics.
+            block_size: Block size used for AOPC perturbations.
+            percentile: Optional cumulative importance threshold used in AOPC.
+            noise_sigma: Noise level used for local stability estimation.
+        
+        Return:
+            dict: Aggregated GradCAM evaluation metrics.
+        """
         def get_last_conv_layer(model):
+            """Locate the final convolutional layer required to run GradCAM.
+            
+            Args:
+                model: Model whose modules are inspected.
+            
+            Return:
+                nn.Module: Last convolutional layer found in the model.
+            """
             last_conv = None
             for name, module in model.named_modules():
                 if isinstance(module, nn.Conv2d): last_conv = module
@@ -600,6 +564,18 @@ class XAIEvaluator:
         return results
 
     def evaluate_with_rise(self, loader, compute_aopc=True, block_size=8, percentile=None, noise_sigma=0.02):
+        """Evaluate RISE explanations on a dataloader and aggregate explanation quality metrics.
+        
+        Args:
+            loader: DataLoader that supplies evaluation batches.
+            compute_aopc: Whether to compute AOPC-based metrics.
+            block_size: Block size used for AOPC perturbations.
+            percentile: Optional cumulative importance threshold used in AOPC.
+            noise_sigma: Noise level used for local stability estimation.
+        
+        Return:
+            dict: Aggregated RISE evaluation metrics.
+        """
         rise_explainer = RISE(
             model=self.model,
             n_masks=500,
@@ -619,12 +595,12 @@ class XAIEvaluator:
 
             for i in range(len(imgs)):
                 img_tensor = imgs[i].unsqueeze(0)
-                # self._synchronize_device(device)
-                # explanation_start = time.perf_counter()
+                self._synchronize_device(device)
+                explanation_start = time.perf_counter()
                 heatmap = rise_explainer.explain(img_tensor)
-                # self._synchronize_device(device)
-                # explanation_times.append(time.perf_counter() - explanation_start)
-                # # RISE trả về (n_classes, H, W); phải lấy kênh đúng lớp dự đoán (giống sample_xAI.explain_with_rise)
+                self._synchronize_device(device)
+                explanation_times.append(time.perf_counter() - explanation_start)
+                # RISE returns (n_classes, H, W); select the channel that matches the predicted class
                 if torch.is_tensor(heatmap):
                     heatmap_abs = np.abs(heatmap[int(y_model[i])].detach().cpu().numpy())
                 else:
@@ -637,28 +613,28 @@ class XAIEvaluator:
                         interpolation=cv2.INTER_LINEAR,
                     )
 
-                # # Gini Sparsity
-                # all_gini.append(self.gini_sparsity(heatmap_abs))
+                # Gini Sparsity
+                all_gini.append(self.gini_sparsity(heatmap_abs))
                 
-                # # Insertion & Deletion
-                # all_insertion.append(self.insertion_deletion_score(self.model, img_tensor, heatmap_abs, y_model[i], steps=20, mode="insertion"))
-                # all_deletion.append(self.insertion_deletion_score(self.model, img_tensor, heatmap_abs, y_model[i], steps=20, mode="deletion"))
+                # Insertion & Deletion
+                all_insertion.append(self.insertion_deletion_score(self.model, img_tensor, heatmap_abs, y_model[i], steps=20, mode="insertion"))
+                all_deletion.append(self.insertion_deletion_score(self.model, img_tensor, heatmap_abs, y_model[i], steps=20, mode="deletion"))
 
-                # # Local Stability
-                # img_noisy = (img_tensor + torch.randn_like(img_tensor) * noise_sigma).clamp(-5.0, 5.0)
-                # heatmap_noisy = rise_explainer.explain(img_noisy)
-                # if torch.is_tensor(heatmap_noisy):
-                #     hm_noisy_2d = np.abs(heatmap_noisy[int(y_model[i])].detach().cpu().numpy())
-                # else:
-                #     hm_noisy_2d = np.abs(np.asarray(heatmap_noisy)[int(y_model[i])])
-                # if hm_noisy_2d.shape != (h_img, w_img):
-                #     hm_noisy_2d = cv2.resize(
-                #         hm_noisy_2d.astype(np.float32),
-                #         (int(w_img), int(h_img)),
-                #         interpolation=cv2.INTER_LINEAR,
-                #     )
-                # stab = np.linalg.norm(vectorize_explanation(heatmap_abs) - vectorize_explanation(hm_noisy_2d))
-                # all_stability.append(stab)
+                # Local Stability
+                img_noisy = (img_tensor + torch.randn_like(img_tensor) * noise_sigma).clamp(-5.0, 5.0)
+                heatmap_noisy = rise_explainer.explain(img_noisy)
+                if torch.is_tensor(heatmap_noisy):
+                    hm_noisy_2d = np.abs(heatmap_noisy[int(y_model[i])].detach().cpu().numpy())
+                else:
+                    hm_noisy_2d = np.abs(np.asarray(heatmap_noisy)[int(y_model[i])])
+                if hm_noisy_2d.shape != (h_img, w_img):
+                    hm_noisy_2d = cv2.resize(
+                        hm_noisy_2d.astype(np.float32),
+                        (int(w_img), int(h_img)),
+                        interpolation=cv2.INTER_LINEAR,
+                    )
+                stab = np.linalg.norm(vectorize_explanation(heatmap_abs) - vectorize_explanation(hm_noisy_2d))
+                all_stability.append(stab)
 
                 # AOPC
                 if compute_aopc:
@@ -678,17 +654,17 @@ class XAIEvaluator:
                         rise_masked_probs.append(float(masked_prob))
                         
                     except Exception: pass
-                    # _, _, mean_AOPC = self._compute_single_aopc(img_tensor.squeeze(0), heatmap_abs, original_class, original_prob, block_size, percentile, False)
-                    # all_aopc_scores.append(mean_AOPC)
+                    _, _, mean_AOPC = self._compute_single_aopc(img_tensor.squeeze(0), heatmap_abs, original_class, original_prob, block_size, percentile, False)
+                    all_aopc_scores.append(mean_AOPC)
 
         results = {
-            # "RISE_Time": float(np.mean(explanation_times)) if explanation_times else 0.0,
-            # "RISE_Gini_Sparsity": float(np.mean(all_gini)) if all_gini else 0.0,
-            # "RISE_Insertion_AUC": float(np.mean(all_insertion)) if all_insertion else 0.0,
-            # "RISE_Deletion_AUC": float(np.mean(all_deletion)) if all_deletion else 0.0,
-            # "RISE_Local_Stability_L2": float(np.mean(all_stability)) if all_stability else 0.0,
+            "RISE_Time": float(np.mean(explanation_times)) if explanation_times else 0.0,
+            "RISE_Gini_Sparsity": float(np.mean(all_gini)) if all_gini else 0.0,
+            "RISE_Insertion_AUC": float(np.mean(all_insertion)) if all_insertion else 0.0,
+            "RISE_Deletion_AUC": float(np.mean(all_deletion)) if all_deletion else 0.0,
+            "RISE_Local_Stability_L2": float(np.mean(all_stability)) if all_stability else 0.0,
         }
-        # if compute_aopc and len(all_aopc_scores) > 0: results["RISE_AOPC_Mean"] = float(np.mean(all_aopc_scores))
+        if compute_aopc and len(all_aopc_scores) > 0: results["RISE_AOPC_Mean"] = float(np.mean(all_aopc_scores))
         if len(rise_orig_probs) > 0:
             try:
                 avg_drop, inc_rate = self.average_drop_increase(rise_orig_probs, rise_masked_probs)

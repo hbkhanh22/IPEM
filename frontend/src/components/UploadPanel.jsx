@@ -5,7 +5,7 @@ const UploadPanel = ({ onAnalyze, disabled }) => {
   const [image, setImage] = useState(null);
   const [previewUrl, setPreviewUrl] = useState(null);
   
-  const [dataset, setDataset] = useState('animals');
+  const [dataset, setDataset] = useState('brain-tumor');
   const [model, setModel] = useState('efficientnet_b3');
   const [xaiMethod, setXaiMethod] = useState('gradcam');
   
@@ -105,7 +105,6 @@ const UploadPanel = ({ onAnalyze, disabled }) => {
           onChange={(e) => setDataset(e.target.value)}
           disabled={disabled}
         >
-          <option value="animals">Animals (10 classes)</option>
           <option value="brain-tumor">Brain Tumor</option>
           <option value="caltech-101">Caltech-101</option>
         </select>
@@ -131,10 +130,9 @@ const UploadPanel = ({ onAnalyze, disabled }) => {
       <div className="input-group">
         <label className="label">Explanation Method</label>
         <div className="radio-options">
-          {['lime', 'shap', 'gradcam', 'rise', 'ipem'].map((method) => {
+          {['lime', 'gradcam', 'rise', 'ipem'].map((method) => {
             const labelMap = {
               lime: 'LIME (Local Interpretable)',
-              shap: 'SHAP (Shapley Values)',
               gradcam: 'Grad-CAM',
               rise: 'RISE',
               ipem: 'IPEM (Proposed)'

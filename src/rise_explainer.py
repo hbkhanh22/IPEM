@@ -8,6 +8,20 @@ import torch.nn.functional as F
 
 class RISE(nn.Module):
     def __init__(self, model, n_masks=1000, p=0.5, input_size=(224, 224), initial_mask_size=(7,7), n_batch=64, mask_path=None):
+        """Initialize the RISE explainer and prepare the random masks used for saliency estimation.
+        
+        Args:
+            model: Trained model that produces class logits.
+            n_masks: Number of random masks to sample.
+            p: Probability that a mask cell remains visible.
+            input_size: Spatial size expected by the model input.
+            initial_mask_size: Low-resolution mask size before upsampling.
+            n_batch: Number of masked samples processed per batch.
+            mask_path: Optional path to a saved mask tensor.
+        
+        Return:
+            None.
+        """
         super().__init__()
         self.model = model
         self.n_masks = n_masks
@@ -22,6 +36,14 @@ class RISE(nn.Module):
 
     def _generate_masks(self):
         # Cell size in the unsampled mask
+        """Generate the random masks used to probe the model during RISE explanation.
+        
+        Args:
+            None.
+        
+        Return:
+            torch.Tensor: Batch of upsampled masks aligned with the model input size.
+        """
         Ch = np.ceil(self.input_size[0] / self.initial_mask_size[0])
         Cw = np.ceil(self.input_size[1] / self.initial_mask_size[1])
 
@@ -34,7 +56,7 @@ class RISE(nn.Module):
             binary_mask = torch.randn(1, 1, self.initial_mask_size[0], self.initial_mask_size[1])
             binary_mask = (binary_mask < self.p).float()            
 
-            # Unsample mask (Sử dụng bilinear thay vì nearest để tránh bị pixelated ô vuông)
+            # Upsample the mask with bilinear interpolation to avoid blocky artifacts
             mask = F.interpolate(binary_mask, (resize_h, resize_w), mode="bilinear", align_corners=False)
 
             # Random cropping
@@ -48,22 +70,46 @@ class RISE(nn.Module):
         return torch.cat(masks, dim=0)
 
     def load_masks(self, filepath):
+        """Load precomputed RISE masks from disk.
+        
+        Args:
+            filepath: Path to the saved mask tensor.
+        
+        Return:
+            torch.Tensor: Loaded mask tensor.
+        """
         masks = torch.load(filepath)
         return masks
 
     def save_masks(self, filepath):
+        """Save the generated RISE masks to disk for reuse.
+        
+        Args:
+            filepath: Destination path for the mask tensor.
+        
+        Return:
+            None.
+        """
         torch.save(self.masks, filepath)
 
     @torch.no_grad()
     def explain(self, input_img):
         # input_img size: (1, 3, H, W)
+        """Estimate class-wise saliency maps by evaluating the model on masked versions of the input image.
+        
+        Args:
+            input_img: Input tensor with shape (1, C, H, W).
+        
+        Return:
+            torch.Tensor: Normalized saliency maps for every predicted class.
+        """
         device = next(self.model.parameters()).device
         self.masks = self.masks.to(device)
         input_img = input_img.to(device)
 
         masked_x = torch.mul(self.masks, input_img.data)
 
-        # Chạy qua model theo từng batch (n_batch=64) để tránh tràn VRAM sang Shared RAM
+        # Run the model in batches to avoid exhausting VRAM and spilling into shared memory
         probs_list = []
         for i in range(0, self.n_masks, self.n_batch):
             input_batch = masked_x[i:i+self.n_batch]

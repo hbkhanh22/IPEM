@@ -1,14 +1,13 @@
 import argparse
-from animal_classifier import AnimalImageClassifier
 from caltech_classifier import CaltechImageClassifier
 from brain_tumor_classifier import BrainTumorClassifier
 
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--data-dir', type=str, default='data')
-    parser.add_argument('--dataset', type=str, choices=['animals', 'caltech-101', 'brain-tumor'], default='animals')
+    parser.add_argument('--dataset', type=str, choices=['caltech-101', 'brain-tumor'], default='caltech-101')
     parser.add_argument('--output-dir', type=str, default='outputs')
-    parser.add_argument('--model', type=str, choices=["efficientnet_b3", "resnet50", "densenet121", "mobilenet_v3", "vgg19", "transformer"], default="efficientnet_b3")
+    parser.add_argument('--model', type=str, choices=["efficientnet_b3", "resnet50", "transformer"], default="efficientnet_b3")
     parser.add_argument('--epochs', type=int, default=50)
     parser.add_argument('--batch-size', type=int, default=32)
     parser.add_argument('--img-size', type=int, default=224)
@@ -18,11 +17,7 @@ def parse_args():
 
 def main():
     args = parse_args()
-    if args.dataset.lower() == 'animals' or args.dataset.lower() == 'animal':
-        clf = AnimalImageClassifier(data_dir=args.data_dir, output_dir=args.output_dir, args_model=args.model,
-                          img_size=args.img_size, batch_size=args.batch_size, epochs=args.epochs,
-                          test_loader_fraction=args.test_loader_fraction)
-    elif args.dataset.lower() == 'caltech-101':
+    if args.dataset.lower() == 'caltech-101':
         clf = CaltechImageClassifier(data_dir=args.data_dir, output_dir=args.output_dir, args_model=args.model,
                           img_size=args.img_size, batch_size=args.batch_size, epochs=args.epochs,
                           test_loader_fraction=args.test_loader_fraction)
